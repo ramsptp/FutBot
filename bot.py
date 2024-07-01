@@ -6,6 +6,8 @@ import random
 import asyncio
 import logging
 from fuzzywuzzy import process
+from dotenv import load_dotenv
+import os
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -112,6 +114,10 @@ async def on_message(message):
         await bot.process_commands(message)
 
 
+load_dotenv()
+
+# Get the token from the environment variable
+TOKEN = os.getenv('DISCORD_TOKEN')
 
 
 
@@ -2537,4 +2543,4 @@ async def open_tester_pack(ctx, user_id):
 
 
 
-bot.run('MTI1NTUyMDczMjU3MDU4MzA0MA.Gd1CJM.PWHTPnNSdspcvKb8sN69xRbfDLFKuQiUHrgLuY')
+bot.run('MTI1NTUyMDczMjU3MDU4MzA0MA.GGR3VR.r99Gkd5-NQu14bKEE-NNzQJtx1x2AboXii1B5M')
