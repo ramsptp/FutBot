@@ -1,2 +1,4 @@
 # .gitignore
 .env
+card_games.db
+pitch.png

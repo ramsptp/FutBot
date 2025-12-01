@@ -6,16 +6,42 @@ import random
 import asyncio
 import logging
 from fuzzywuzzy import process
-from dotenv import load_dotenv
+from PIL import Image, ImageDraw, ImageFont
+import io
+import time 
 import os
+from dotenv import load_dotenv
 
-# Set up logging
+
+
+#----------------------------ENVIRONMENT SETUP---------------------------------------------------------------------------------
+
+# 1. Load the .env file
+load_dotenv()
+
+# 2. Setup Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 3. Helper function to load lists from .env
+def load_id_list(env_key):
+    val = os.getenv(env_key)
+    if not val: return []
+    return [int(x.strip()) for x in val.split(',') if x.strip().isdigit()]
+
+# 4. Load Configuration Variables
+TOKEN = os.getenv('DISCORD_TOKEN')
+ADMIN_IDS = load_id_list('ADMIN_IDS')
+DROP_CHANNEL_IDS = load_id_list('DROP_CHANNEL_IDS')
+ALLOWED_CHANNELS = load_id_list('ALLOWED_CHANNELS')
+SUGGESTION_CHANNEL_ID = int(os.getenv('SUGGESTION_CHANNEL_ID'))
 
 # Connect to SQLite database (or create it if it doesn't exist)
 conn = sqlite3.connect('cards_game.db')
 cursor = conn.cursor()
+
+
+
 
 
 
@@ -96,7 +122,31 @@ CREATE TABLE IF NOT EXISTS user_achievements (
 )
 ''')
 
+def migrate_db():
+    try:
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        
+        # Check if columns exist, if not, add them
+        cursor.execute("PRAGMA table_info(players)")
+        columns = [info[1] for info in cursor.fetchall()]
+        
+        if 'rounds_drawn' not in columns:
+            print("Migrating DB: Adding rounds_drawn column...")
+            cursor.execute("ALTER TABLE players ADD COLUMN rounds_drawn INTEGER DEFAULT 0")
+            
+        if 'battles_drawn' not in columns:
+            print("Migrating DB: Adding battles_drawn column...")
+            cursor.execute("ALTER TABLE players ADD COLUMN battles_drawn INTEGER DEFAULT 0")
+            
+        conn.commit()
+        conn.close()
+        print("Database migration complete.")
+    except Exception as e:
+        print(f"Migration Error: {e}")
 
+# IMPORTANT: Call this function once when the bot starts
+migrate_db()
 
 #---------------------------------------------------------SETUP-------------------------------------------------------------------------------------
 
@@ -104,22 +154,59 @@ conn.commit()
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix=['!'], intents=intents)
+bot = commands.Bot(command_prefix=['f','F'], intents=intents)
 
-allowed_channels = [1255230565875978240, 1255360547105542186]
-                    
+@bot.check
+async def global_channel_check(ctx):
+    # 1. Allow DMs if needed (Optional)
+    if ctx.guild is None: return False
+
+    # 2. Check Allowed Channels (Applies to EVERYONE, including Admins)
+    if ctx.channel.id in ALLOWED_CHANNELS:
+        return True
+    
+    # If we are here, the channel is wrong.
+    raise commands.CheckFailure("Channel not allowed.")
+
 @bot.event
 async def on_message(message):
-    if message.channel.id in allowed_channels:
-        await bot.process_commands(message)
+    # 1. Ignore itself
+    if message.author == bot.user:
+        return
+
+    # 2. OPTIMIZATION: Ignore non-allowed channels immediately
+    # We removed the Admin check here, so it blocks everyone
+    if message.guild is not None and message.channel.id not in ALLOWED_CHANNELS:
+        return
+
+    # 3. Process
+    await bot.process_commands(message)
 
 
-load_dotenv()
+@bot.event
+async def on_command_error(ctx, error):
+    # 1. Handle Channel Restriction Errors
+    if isinstance(error, commands.CheckFailure):
+        # IF SLASH COMMAND: Send a hidden warning (only user sees it)
+        if ctx.interaction:
+            await ctx.send(f"⛔ Commands are only allowed in <#{ALLOWED_CHANNELS[0]}>.", ephemeral=True)
+        
+        # IF TEXT COMMAND (!daily): Do nothing (Stay silent)
+        else:
+            return 
 
-# Get the token from the environment variable
-TOKEN = os.getenv('DISCORD_TOKEN')
+    # 2. Handle Cooldowns (e.g., !daily)
+    elif isinstance(error, commands.CommandOnCooldown):
+        retry_after = int(time.time() + error.retry_after)
+        # Use send for text commands, interaction for slash
+        if ctx.interaction:
+            await ctx.send(f"⏳ Cooldown! Try again <t:{retry_after}:R>.", ephemeral=True)
+        else:
+            await ctx.send(f"⏳ Cooldown! Try again <t:{retry_after}:R>.", delete_after=5)
 
-
+    # 3. Print other errors to console for debugging
+    else:
+        logger.error(f"Command Error: {error}")
 
 #---------------------------------------------------------HELP-------------------------------------------------------------------------------------
 
@@ -170,34 +257,39 @@ class NextButton(discord.ui.Button):
             await interaction.response.edit_message(embed=embed, view=view)
 
 
-@bot.command(name='help')
+@bot.hybrid_command(name='help', description="Show the help menu")
 async def help_command(ctx):
     view_commands = [
         {"name": "view player_name", "value": "Lets you view advanced details of any card"},
         {"name": "view_deck name", "value": "Displays all the cards in a deck"},
+        {"name": "decks @user", "value": "Displays all the decks made by a user"},
         {"name": "weight player_name", "value": "Displays the pack weight of the card in a standard drop or daily pack."},
         {"name": "inventory", "value": "Displays all the cards you own"},
         {"name": "titles", "value": "Displays every achievement."},
-        {"name": "titles @user", "value": "Displays every achievement earned by the user."}
-    ]
+        {"name": "titles @user", "value": "Displays every achievement earned by the user."},
+        {"name": "coins", "value": "Displays the coins you own."}
+    ] 
 
     battle_commands = [
         {"name": "battle @user", "value": "Initiates a battle between you and the user"},
         {"name": "battle_logic", "value": "Shows how battle works."},
         {"name": "create_deck deck_name card_id1  card_id2  card_id3  card_id4  card_id5", "value": "Creates a deck with 5 cards for battle"},
-
+        {"name": "edit_deck deck_name card_id1  card_id2  card_id3  card_id4  card_id5", "value": "Edits an already existing deck"},
     ]
 
     reward_commands = [
         {"name": "daily", "value": "Lets you claim a random card. Cooldown: 24 hours"},
         {"name": "drop", "value": "Lets you claim a random card. Cooldown: 30 minutes"},
-        {"name": "get_starter_pack", "value": "Lets you claim 10 players, 6 rated 70-79, 3 rated 80-85, 1 rated 85+"}
+        {"name": "get_starter_pack", "value": "Lets you claim 10 players, 6 rated 70-79, 3 rated 80-85, 1 rated 85+"},
+        {"name": "shop", "value": "Displays items for sale"},
+        {"name": "buy pack_no", "value": "Lets you buy a pack with coins."},
+        {"name": "sell card_id", "value": "Sells one of the cards you own in exchange for coins."}
     ]
 
     misc_commands = [
         {"name": "trade yourcard_id @user theircard_id", "value": "Lets you trade one of your cards for one of theirs"},
         {"name": "facts", "value": "Sends a random football fact."},
-        {"name": "Secret Commands", "value": "Their are a lot of secret commands related to football hidden throughout. Find them for heavy rewards. PS:They are all lower case and has no special characters."},
+        {"name": "Secret Commands", "value": "There are lots of secret commands related to football hidden throughout. Find them for heavy rewards. \n Current Hint: There are 5 secret commands all based on countries.\nPS:They are all lower case and has no special characters"},
         {"name": "suggest", "value": "Sends suggestions to developers."}
     ]
 
@@ -234,7 +326,7 @@ async def help_command(ctx):
     await ctx.send(embed=embeds[0], view=view)
 
 
-@bot.command(name='battle_logic')
+@bot.hybrid_command(name='battle_logic', description="Learn how the battle system works")
 async def battle_logic(ctx):
     embed = discord.Embed(
         title="Battle Logic",
@@ -262,13 +354,22 @@ async def battle_logic(ctx):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.0.0"
+BOT_VERSION = "1.2.6"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
-CHANGELOG = ["1.0.0 - Initial realease"]
+CHANGELOG = ['''1.0.0 - Initial realease 
+1.1.0- Added Shop and Sell functions. Multiple minor patches.
+1.1.1- Fixed minor bugs and added hero cards.
+1.2.0- Battle UI overhaul
+1.2.1- Deck Lineup UI
+1.2.2- 30 min card drop logic fix
+1.2.3- fdrop updates
+1.2.4- Added Draws
+1.2.5- Added Slash Commands
+1.2.6- Fixed slash command bugs''']
 # Existing commands like !daily, !drop, !view, etc.
 
-@bot.command(name='about')
+@bot.hybrid_command(name='about', description="About this bot")
 async def about(ctx):
     embed = discord.Embed(title="About This Bot", color=discord.Color.blue())
     embed.add_field(name="Version", value=f"```{BOT_VERSION}```", inline=True)
@@ -279,13 +380,13 @@ async def about(ctx):
     await ctx.send(embed=embed)
 
 
-@bot.command(name='version')
+@bot.hybrid_command(name='version', description="Check bot version")
 async def version(ctx):
     embed = discord.Embed(title="Bot Version")
     embed.add_field(name="Version", value=f"```{BOT_VERSION}```", inline=False)
     await ctx.send(embed=embed)
 
-@bot.command(name='changelog')
+@bot.hybrid_command(name='changelog', description="Check recent changes")
 async def changelog(ctx):
     embed = discord.Embed(title="Changelog")
     changelog_text = "\n".join([f"```{entry}```" for entry in CHANGELOG])
@@ -296,10 +397,11 @@ async def changelog(ctx):
 #---------------------------------------------------------SUGGESTIONS-------------------------------------------------------------------------------------
 
 
-@bot.command(name='suggest')
+@bot.hybrid_command(name='suggest', description="Submit a suggestion")
 async def suggest(ctx, *, suggestion: str):
-    suggestion_channel_id = 1255360547105542186  # Replace with your channel ID
-    suggestion_channel = bot.get_channel(suggestion_channel_id)
+    # Use the variable loaded from env
+    suggestion_channel = bot.get_channel(SUGGESTION_CHANNEL_ID) 
+    
     if suggestion_channel:
         embed = discord.Embed(title="New Suggestion", description=suggestion, color=0x0000ff)
         embed.add_field(name="Suggested by", value=ctx.author.mention, inline=False)
@@ -312,7 +414,7 @@ async def suggest(ctx, *, suggestion: str):
 
 #---------------------------------------------------------ACHIEVEMENTS-------------------------------------------------------------------------------------
 
-@bot.command(name='titles')
+@bot.hybrid_command(name='titles', description="View achievements")
 async def display_achievements(ctx, member: discord.Member = None):
     if member is None:
         cursor.execute('SELECT title, description FROM achievements')
@@ -591,7 +693,7 @@ async def pineappleonpizza(ctx):
 
 mannschaft_card_ids = [10417, 10447, 10449, 10452, 10463]
 
-@bot.command(name='mannschaft')
+@bot.command(name='fubball')
 @secret_command()
 async def mannschaft(ctx):
     ensure_player_exists(ctx.author.id, ctx.author.name)
@@ -796,7 +898,7 @@ facts_list = [
     "Germany has a storied football history, having won the FIFA World Cup four times, and is known for their consistent performance in international tournaments, embodying the spirit of their beloved 'Fußball'."
 ]
 
-@bot.command(name='facts')
+@bot.hybrid_command(name='facts', description="Get a random football fact")
 async def facts(ctx):
     fact = random.choice(facts_list)
     embed = discord.Embed(title="Football Fact", description=fact, color=discord.Color.blue())
@@ -908,15 +1010,21 @@ weight_70_79 = 70
 weight_80_85 = 20
 weight_86_90 = 7
 weight_90_plus = 3
-weight_non_standard_80 = 2
-weight_non_standard_90 = 1
+weight_hero = 2
+weight_icon_80 = 2
+weight_icon_90 = 1
+weight_euro_tott = 1
+weight_copa_tott = 1
 
 cards_with_weights = [(card, weight_70_79) for card in all_cards if 70 <= card.overall <= 79 and card.card_type == 'Standard'] + \
                      [(card, weight_80_85) for card in all_cards if 80 <= card.overall <= 85 and card.card_type == 'Standard'] + \
                      [(card, weight_86_90) for card in all_cards if 86 <= card.overall <= 90 and card.card_type == 'Standard'] + \
                      [(card, weight_90_plus) for card in all_cards if card.overall > 90 and card.card_type == 'Standard'] + \
-                     [(card, weight_non_standard_80) for card in all_cards if 80 <= card.overall <= 89 and card.card_type != 'Standard'] + \
-                     [(card, weight_non_standard_90) for card in all_cards if card.overall > 90 and card.card_type != 'Standard']
+                     [(card, weight_hero) for card in all_cards if card.card_type == 'Hero'] + \
+                     [(card, weight_icon_80) for card in all_cards if 80 <= card.overall <= 89 and card.card_type == 'Icon'] + \
+                     [(card, weight_icon_90) for card in all_cards if card.overall >= 90 and card.card_type == 'Icon']  + \
+                     [(card, weight_euro_tott) for card in all_cards if card.card_type == 'Euro TOTT']  + \
+                     [(card, weight_euro_tott) for card in all_cards if card.card_type == 'Copa America TOTT']
 
 def get_card_weight_by_name(card_name):
     card = get_card_by_name(card_name)
@@ -945,7 +1053,7 @@ def get_card_weight_by_name(card_name):
 
 
 
-@bot.command(name='weight')
+@bot.hybrid_command(name='weight', description="Check the pack weight of a card")
 async def weight(ctx, *, card_name: str):
     weight, actual_card_name = get_card_weight_by_name(card_name)
     if weight:
@@ -959,16 +1067,47 @@ async def weight(ctx, *, card_name: str):
 
 
 class CollectButton(discord.ui.Button):
-    def __init__(self, card, channel):
+    def __init__(self, card):
         super().__init__(style=discord.ButtonStyle.green, label="Collect", custom_id="collect_card")
         self.card = card
-        self.channel = channel
 
     async def callback(self, interaction: discord.Interaction):
+        # 1. Add to database
         ensure_player_exists(interaction.user.id, interaction.user.name)
-        add_card_to_inventory(interaction.user.id, self.card.card_id)
-        await interaction.response.send_message(f'{interaction.user.name} collected {self.card.name}!', ephemeral=True)
-        await self.channel.send(f'{interaction.user.mention} collected {self.card.name}!')
+        try:
+            add_card_to_inventory(interaction.user.id, self.card.card_id)
+        except ValueError:
+            return await interaction.response.send_message("You already have this card!", ephemeral=True)
+
+        # 2. Create the "Collected" Embed
+        embed = discord.Embed(
+            title="✅ Card Collected!",
+            description=f"**{self.card.name}** has been collected by {interaction.user.mention}!",
+            color=discord.Color.gold()
+        )
+        embed.set_image(url=f"attachment://{self.card.image_path.split('/')[-1]}")
+        
+        # ROW 1: Stats (Overall added to start, Speed icon changed to Lightning)
+        embed.add_field(
+            name="Stats", 
+            value=f"⭐ {self.card.overall} | ⚔️ {self.card.attack} | 🛡️ {self.card.defense} | ⚡ {self.card.speed}", 
+            inline=False
+        )
+
+        # ROW 2: Card Details (ID, Rarity, Copies)
+        # Note: We add +1 to copies because the drop itself generated a new copy
+        embed.add_field(
+            name="Card Details",
+            value=f"ID: {self.card.card_id} | Rarity: {self.card.card_rarity} | Total Copies: {self.card.copies + 1}",
+            inline=False
+        )
+
+        embed.set_footer(text=f"Winner: {interaction.user.name}", icon_url=interaction.user.display_avatar.url)
+
+        # 3. Edit the Original Message and remove buttons
+        await interaction.response.edit_message(embed=embed, view=None)
+        
+        # 4. Stop the view logic
         self.view.stop()
 
 @bot.event
@@ -985,27 +1124,61 @@ def weighted_choice(cards_with_weights):
             return card
         upto += weight
 
+
+#---------------------------------------------------------AUTO DROP-------------------------------------------------------------------------------------
+# Helper to run one drop in one channel
+async def handle_single_drop(channel, card):
+    try:
+        embed = discord.Embed(
+            title="🎁 Random Card Drop!", 
+            description="Be the first to click **Collect** to claim this card!",
+            color=discord.Color.blue()
+        )
+        embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
+        embed.set_footer(text="Hurry! This drop expires in 2 minutes.")
+
+        view = discord.ui.View(timeout=120)
+        view.add_item(CollectButton(card))
+
+        msg = await channel.send(embed=embed, view=view, file=discord.File(card.image_path))
+        
+        await view.wait()
+        
+        if not view.is_finished(): 
+            disabled_view = discord.ui.View()
+            btn = discord.ui.Button(label="Expired", style=discord.ButtonStyle.grey, disabled=True)
+            disabled_view.add_item(btn)
+            
+            embed.title = "❌ Drop Expired"
+            embed.description = "No one collected this card in time."
+            embed.color = discord.Color.red()
+            await msg.edit(embed=embed, view=disabled_view)
+            
+    except Exception as e:
+        logger.error(f"Error dropping in channel {channel.id}: {e}")
+
 @tasks.loop(minutes=30)
 async def card_drop():
-    channel = bot.get_channel(1255230565875978240)  # Replace with your channel ID
-    card = weighted_choice(cards_with_weights)
+    await bot.wait_until_ready()
     
+    # 1. Choose ONE card for this cycle
+    card = weighted_choice(cards_with_weights)
     add_card(card)
 
-    embed = discord.Embed(title="Card Drop!", description="A new card is available!")
-    embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-    view = discord.ui.View(timeout=60)  # 1 minute timeout
-    view.add_item(CollectButton(card, channel))
-    
-    msg = await channel.send(embed=embed, view=view, file=discord.File(card.image_path))
-    
-    await asyncio.sleep(60)  # 1 minute timeout
-    if not view.is_finished():
-        await msg.edit(content="The card drop has expired!", view=None)
+    # 2. Drop it in EVERY configured channel
+    for channel_id in DROP_CHANNEL_IDS:
+        channel = bot.get_channel(channel_id)
+        if channel:
+            # Run in background so Channel 2 doesn't wait for Channel 1
+            bot.loop.create_task(handle_single_drop(channel, card))
+        else:
+            logger.error(f"Could not find drop channel ID: {channel_id}")
 
 
 
-@bot.command(name='get_starter_pack')
+#---------------------------------------------------------STARTER PACK-------------------------------------------------------------------------------------
+
+@bot.hybrid_command(name='get_starter_pack', description="Claim your free starter cards")
 async def get_starter_pack(ctx):
     ensure_player_exists(ctx.author.id, ctx.author.name)
     cursor.execute('SELECT has_claimed_starter_pack FROM players WHERE user_id = ?', (ctx.author.id,))
@@ -1016,13 +1189,14 @@ async def get_starter_pack(ctx):
 
     common_pack = random.sample([card for card in all_cards if 70 <= card.overall <= 79], 6)
     uncommon_pack = random.sample([card for card in all_cards if 80 <= card.overall <= 85], 3)
-    rare_pack = random.sample([card for card in all_cards if card.overall > 85], 1)
+    rare_pack = random.sample([card for card in all_cards if card.overall > 85 and card.card_type == 'Standard'], 1)
 
     all_cards_received = common_pack + uncommon_pack + rare_pack
 
     for card in all_cards_received:
-        add_card_to_inventory(ctx.author.id, card.card_id)
         increment_card_copies(card.card_id)
+        add_card_to_inventory(ctx.author.id, card.card_id)
+        
 
     cursor.execute('UPDATE players SET has_claimed_starter_pack = 1 WHERE user_id = ?', (ctx.author.id,))
     conn.commit()
@@ -1040,38 +1214,42 @@ def increment_card_copies(card_id):
 def get_card_by_name_or_id(identifier):
     conn = sqlite3.connect('cards_game.db')
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM cards')
-    rows = cursor.fetchall()
-    conn.close()
-    cards = [Card(*row) for row in rows]
     
     if identifier.isdigit():
-        for card in cards:
-            if card.card_id == int(identifier):
-                return [card]
+        cursor.execute('SELECT * FROM cards WHERE card_id = ?', (int(identifier),))
+        rows = cursor.fetchall()
     else:
-        card_names = [card.name.lower() for card in cards]
-        best_matches = process.extract(identifier.lower(), card_names, limit=5)
-        matched_cards = [cards[card_names.index(match[0])] for match in best_matches if match[1] > 80]  # Adjust threshold as needed
-        if matched_cards:
-            return matched_cards
-    
-    return None
+        cursor.execute('SELECT DISTINCT player_id FROM cards WHERE LOWER(name) LIKE ?', ('%' + identifier.lower() + '%',))
+        player_ids = cursor.fetchall()
+        
+        if player_ids:
+            player_ids = [pid[0] for pid in player_ids]
+            query = 'SELECT * FROM cards WHERE player_id IN ({})'.format(','.join('?' for _ in player_ids))
+            cursor.execute(query, player_ids)
+            rows = cursor.fetchall()
+        else:
+            rows = []
+
+    conn.close()
+    return [Card(*row) for row in rows]
+
+
 
 
 from discord.ui import Select, View
 
 class ViewCardSelect(discord.ui.Select):
     def __init__(self, cards, user):
-        options = [discord.SelectOption(label=card.name, description=f"ID: {card.card_id}", value=str(card.card_id)) for card in cards]
+        options = [discord.SelectOption(label=f"{card.name} - {card.card_type}", description=f"ID: {card.card_id}", value=f"{card.card_id}-{i}") for i, card in enumerate(cards)]
         super().__init__(placeholder="Select the card...", min_values=1, max_values=1, options=options)
         self.cards = cards
         self.user = user
 
     async def callback(self, interaction: discord.Interaction):
-        selected_card_id = int(self.values[0])
+        selected_card_id, _ = self.values[0].split('-')
+        selected_card_id = int(selected_card_id)
         selected_card = next(card for card in self.cards if card.card_id == selected_card_id)
-        
+
         embed = discord.Embed(title=f"**{selected_card.name}**", color=discord.Color.blue())
         embed.add_field(name="ID", value=selected_card.card_id, inline=True)
         embed.add_field(name="Rarity", value=selected_card.card_rarity, inline=True)
@@ -1099,7 +1277,7 @@ class ViewCardSelectView(View):
 
 
 
-@bot.command(name='view')
+@bot.hybrid_command(name='view', description="View details of a card")
 async def view(ctx, *, identifier: str):
     ensure_player_exists(ctx.author.id, ctx.author.name)
     cards = get_card_by_name_or_id(identifier)
@@ -1108,8 +1286,12 @@ async def view(ctx, *, identifier: str):
             card = cards[0]
             
             # Check if the user owns the card
+            conn = sqlite3.connect('cards_game.db')
+            cursor = conn.cursor()
             cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
             inventory_entry = cursor.fetchone()
+            conn.close()
+            
             owned_by_user = "Yes" if inventory_entry else "No"
 
             embed = discord.Embed(title=f"**{card.name}**", color=discord.Color.blue())
@@ -1151,8 +1333,8 @@ async def view(ctx, *, identifier: str):
 #---------------------------------------------------------DROPS-------------------------------------------------------------------------------------
 
 
-@bot.command(name='daily')
-@commands.cooldown(1, 86400, commands.BucketType.user)  # 24 hours cooldown per user
+@bot.hybrid_command(name='daily', description="Claim your daily reward card")
+@commands.cooldown(1, 64800, commands.BucketType.user)  # 18 hours cooldown per user
 async def daily(ctx):
     logger.info(f"User {ctx.author.name} (ID: {ctx.author.id}) invoked the daily command.")
     ensure_player_exists(ctx.author.id, ctx.author.name)
@@ -1171,7 +1353,7 @@ async def daily(ctx):
 
     content = f'{ctx.author.mention}, you have a daily reward card to collect. Please choose one of the following cards:'
 
-    view = discord.ui.View(timeout=60)
+    view = discord.ui.View(timeout=120)
     for card in cards:
         view.add_item(CollectCardButton(card, ctx.author.id))
 
@@ -1191,12 +1373,9 @@ async def daily(ctx):
             f"**Copies:** {card.copies}\n"
         ), inline=True)
     
-    # Add the images of the cards
-    for i, card in enumerate(cards):
-        embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-
+    # Discord only supports one image per embed
     files = [discord.File(card.image_path) for card in cards]
-
+    
     try:
         await ctx.send(content=content, embed=embed, view=view, files=files)
         logger.info(f"Sent daily reward message to {ctx.author.name}")
@@ -1214,47 +1393,45 @@ async def daily_error(ctx, error):
 
 
 
-@bot.command(name='drop')
-@commands.cooldown(1, 1800, commands.BucketType.user)  # 30 minutes cooldown per user
+
+@bot.hybrid_command(name='drop', description="Drop a random card in the chat")
+@commands.cooldown(1, 1800, commands.BucketType.user)
 async def drop_card(ctx):
     logger.info(f"User {ctx.author.name} (ID: {ctx.author.id}) invoked the drop command.")
     ensure_player_exists(ctx.author.id, ctx.author.name)
     
-    # Generate a card
+    # 1. Logic
     card = weighted_choice(cards_with_weights)
     card.copies += 1
     add_card(card)
+    increment_cards_dropped(ctx.author.id)
+
+    # 2. Calculate Timestamps
+    # time.time() gives current time in seconds
+    current_time = int(time.time())
+    unlock_time = current_time + 10
     
-    if increment_cards_dropped(ctx.author.id):  # Increment cards_dropped
-        logger.info(f"User {ctx.author.name}'s cards_dropped incremented successfully.")
-    else:
-        logger.error(f"Failed to increment cards_dropped for user {ctx.author.name}.")
+    # <t:TIMESTAMP:R> tells Discord to show a relative countdown (e.g. "in 5 seconds")
+    description_text = (
+        f"🔒 **Owner Priority:** Ends <t:{unlock_time}:R>\n"
+        f"Anyone can claim after the timer ends!"
+    )
 
-    logger.info(f"Generated card for {ctx.author.name}: {card.name} (ID: {card.card_id})")
-
-    content = f'{ctx.author.mention}, you have a card drop to collect:'
-    embed = discord.Embed(title="Card Drop")
+    content = f'{ctx.author.mention} dropped a card!'
+    
+    embed = discord.Embed(title="🎁 Card Drop", description=description_text, color=discord.Color.blue())
     embed.add_field(name="Name", value=card.name, inline=True)
-    embed.add_field(name="ID", value=card.card_id, inline=True)
     embed.add_field(name="Rarity", value=card.card_rarity, inline=True)
     embed.add_field(name="Type", value=card.card_type, inline=True)
-    embed.add_field(name="Attack", value=card.attack, inline=True)
-    embed.add_field(name="Defense", value=card.defense, inline=True)
-    embed.add_field(name="Speed", value=card.speed, inline=True)
-    embed.add_field(name="Overall", value=card.overall, inline=True)
-    embed.add_field(name="League", value=card.league, inline=True)
-    embed.add_field(name="Nation", value=card.nation, inline=True)
-    embed.add_field(name="Copies", value=card.copies, inline=True)
     embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
 
-    view = View(timeout=60)
-    view.add_item(CollectCardButton(card, ctx.author.id))
+    view = discord.ui.View(timeout=120)
+    view.add_item(TimedCollectButton(card, ctx.author.id))
 
     try:
         await ctx.send(content=content, embed=embed, view=view, file=discord.File(card.image_path))
-        logger.info(f"Sent card drop message to {ctx.author.name}")
     except Exception as e:
-        logger.error(f"Failed to send card drop message to {ctx.author.name}: {e}")
+        logger.error(f"Failed to send card drop message: {e}")
 
 @drop_card.error
 async def drop_card_error(ctx, error):
@@ -1265,7 +1442,47 @@ async def drop_card_error(ctx, error):
         logger.info(f"User {ctx.author.name} tried to drop a card but is on cooldown: {minutes} minutes and {seconds} seconds remaining.")
 
 
+class TimedCollectButton(discord.ui.Button):
+    def __init__(self, card, owner_id):
+        super().__init__(style=discord.ButtonStyle.green, label="Collect", custom_id="timed_collect_card")
+        self.card = card
+        self.owner_id = owner_id
+        self.drop_time = time.time()
 
+    async def callback(self, interaction: discord.Interaction):
+        # 1. Check Time Lock
+        time_elapsed = time.time() - self.drop_time
+        
+        # If NOT owner AND < 10 seconds have passed
+        if interaction.user.id != self.owner_id and time_elapsed < 10:
+            remaining = 10 - int(time_elapsed)
+            # Ephemeral message (only clicker sees it)
+            await interaction.response.send_message(f"✋ **Locked!** Priority to owner for {remaining} more seconds.", ephemeral=True)
+            return
+
+        # 2. Add to Inventory
+        ensure_player_exists(interaction.user.id, interaction.user.name)
+        try:
+            add_card_to_inventory(interaction.user.id, self.card.card_id)
+        except ValueError:
+            return await interaction.response.send_message("You already have this card!", ephemeral=True)
+
+        # 3. Success Embed
+        embed = discord.Embed(
+            title="✅ Card Collected!",
+            description=f"**{self.card.name}** has been collected by {interaction.user.mention}!",
+            color=discord.Color.gold()
+        )
+        embed.set_image(url=f"attachment://{self.card.image_path.split('/')[-1]}")
+        
+        # Stats & Details
+        embed.add_field(name="Stats", value=f"⭐ {self.card.overall} | ⚔️ {self.card.attack} | 🛡️ {self.card.defense} | ⚡ {self.card.speed}", inline=False)
+        embed.add_field(name="Card Details", value=f" ID: {self.card.card_id} |  Rarity: {self.card.card_rarity} |  Total Copies: {self.card.copies + 1}", inline=False)
+        embed.set_footer(text=f"Winner: {interaction.user.name}", icon_url=interaction.user.display_avatar.url)
+
+        # 4. Cleanup
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.view.stop()
 
 
 def increment_cards_dropped(user_id):
@@ -1283,7 +1500,7 @@ def increment_cards_dropped(user_id):
 
 #---------------------------------------------------------STATS-------------------------------------------------------------------------------------
 
-@bot.command(name='stats')
+@bot.hybrid_command(name='stats', description="View player stats")
 async def stats(ctx, member: discord.Member = None):
     if member is None:
         member = ctx.author
@@ -1346,7 +1563,7 @@ class TitleDropdownView(discord.ui.View):
         self.add_item(TitleDropdown(titles, user_id))
 
 
-@bot.command(name='set_title')
+@bot.hybrid_command(name='set_title', description="Equip a title you have unlocked")
 async def set_title(ctx):
     ensure_player_exists(ctx.author.id, ctx.author.name)
     
@@ -1408,7 +1625,7 @@ def get_user_rank_and_details(user_id, criteria):
     return None
 
 # Default leaderboard for battles won
-@bot.group(name='lb', invoke_without_command=True)
+@bot.hybrid_group(name='lb', description="View leaderboards", fallback="battles_won")
 async def leaderboard(ctx):
     cursor.execute('SELECT * FROM players ORDER BY battles_won DESC LIMIT 10')
     rows = cursor.fetchall()
@@ -1424,7 +1641,7 @@ async def leaderboard(ctx):
     logger.info(f'{ctx.author.name} viewed the leaderboard for battles won')
 
 # Subcommands for other leaderboard criteria
-@leaderboard.command(name='bp')
+@leaderboard.command(name='bp', description="Leaderboard: Battles Played")
 async def leaderboard_battles_played(ctx):
     cursor.execute('SELECT * FROM players ORDER BY battles_played DESC LIMIT 10')
     rows = cursor.fetchall()
@@ -1439,7 +1656,7 @@ async def leaderboard_battles_played(ctx):
     await ctx.send(embed=embed)
     logger.info(f'{ctx.author.name} viewed the leaderboard for battles played')
 
-@leaderboard.command(name='rw')
+@leaderboard.command(name='rw', description="Leaderboard: Rounds Won")
 async def leaderboard_rounds_won(ctx):
     cursor.execute('SELECT * FROM players ORDER BY rounds_won DESC LIMIT 10')
     rows = cursor.fetchall()
@@ -1454,7 +1671,7 @@ async def leaderboard_rounds_won(ctx):
     await ctx.send(embed=embed)
     logger.info(f'{ctx.author.name} viewed the leaderboard for rounds won')
 
-@leaderboard.command(name='rp')
+@leaderboard.command(name='rp', description="Leaderboard: Rounds Played")
 async def leaderboard_rounds_played(ctx):
     cursor.execute('SELECT * FROM players ORDER BY rounds_played DESC LIMIT 10')
     rows = cursor.fetchall()
@@ -1473,7 +1690,7 @@ async def leaderboard_rounds_played(ctx):
 import logging
 logger = logging.getLogger(__name__)
 
-@bot.command(name='inventory')
+@bot.hybrid_command(name='inventory', description="View your card collection")
 async def view_inventory(ctx, user: discord.User = None):
     if user is None:
         user = ctx.author
@@ -1556,7 +1773,7 @@ class NextButton(discord.ui.Button):
 
 from discord.ui import View, Button
 
-@bot.command(name='trade')
+@bot.hybrid_command(name='trade', description="Trade cards with another player")
 async def trade(ctx, your_card_id: int, other_user: discord.User, their_card_id: int):
     ensure_player_exists(ctx.author.id, ctx.author.name)
     ensure_player_exists(other_user.id, other_user.name)
@@ -1677,439 +1894,521 @@ def get_deck(user_id, deck_name):
     return list(map(int, result[0].split(',')))
 
 
-@bot.command(name='create_deck')
-async def create_deck(ctx, deck_name: str, *card_ids: int):
-    if len(card_ids) != 5:
-        await ctx.send("A deck must contain exactly 5 cards.")
-        return
 
-    ensure_player_exists(ctx.author.id, ctx.author.name)
-
-    try:
-        add_deck(ctx.author.id, deck_name, card_ids)
-        await ctx.send(f"Deck '{deck_name}' created successfully with cards: {', '.join(map(str, card_ids))}")
-    except ValueError as e:
-        await ctx.send(str(e))
-
-
-@bot.command(name='view_deck')
-async def view_deck(ctx, deck_name: str):
-    ensure_player_exists(ctx.author.id, ctx.author.name)
-    deck = get_deck(ctx.author.id, deck_name)
-    if deck is None:
-        await ctx.send(f"No deck found with the name '{deck_name}'.")
-        return
-
-    card_details = []
-    for card in deck:
-        card_id = card.card_id if hasattr(card, 'card_id') else card  # Ensure card_id is an integer or string
-        cursor.execute('SELECT name, attack, defense, speed, overall, image_path FROM cards WHERE card_id = ?', (card_id,))
-        card_data = cursor.fetchone()
-        if card_data:
-            card_details.append(f"**{card_data[0]}**\nAttack: {card_data[1]}, Defense: {card_data[2]}, Speed: {card_data[3]}, Overall: {card_data[4]}")
-
-    embed = discord.Embed(title=f"Deck '{deck_name}'", description="\n\n".join(card_details))
-    await ctx.send(embed=embed)
 
 from discord.ui import Select, View, Button
 
 
-#---------------------------------------------------------BATTLES-------------------------------------------------------------------------------------
+
+# ---------------------------------------------------------BATTLES REFACTORED-------------------------------------------------------------------------------------
 
 class Battle:
-    def __init__(self, player1, player2, player1_deck, player2_deck, parent_view):
+    def __init__(self, ctx, player1, player2):
+        self.ctx = ctx
+        self.message = None 
         self.player1 = player1
         self.player2 = player2
-        self.player1_deck = player1_deck
-        self.player2_deck = player2_deck
-        self.turn = random.choice([player1, player2])
-        self.player1_wins = 0
-        self.player2_wins = 0
-        self.round = 1
-        self.max_rounds = 5
-        self.player1_action = None
-        self.player2_action = None
-        self.parent_view = parent_view
+        
+        self.player1_deck = []
+        self.player2_deck = []
         self.player1_used_cards = []
         self.player2_used_cards = []
+        
+        self.player1_wins = 0
+        self.player2_wins = 0
+        self.draws = 0 
+        self.round = 1
+        
+        self.turn_player = player1 
+        
+        self.p1_action = None
+        self.p2_action = None
+        self.p1_card = None
+        self.p2_card = None
+        
+        # Track who has offered a draw
+        self.draw_offers = set()
+        
+        self.phase = "SETUP" 
 
-    def get_deck(self, player):
-        if player == self.player1:
-            return [card for card in self.player1_deck if card not in self.player1_used_cards]
-        else:
-            return [card for card in self.player2_deck if card not in self.player2_used_cards]
+    async def start(self):
+        embed = discord.Embed(title="⚔️ Battle Arena ⚔️", description="Both players must select their decks to begin.")
+        embed.add_field(name=self.player1.name, value="❌ Deck Not Selected", inline=True)
+        embed.add_field(name=self.player2.name, value="❌ Deck Not Selected", inline=True)
+        
+        view = SetupView(self)
+        self.message = await self.ctx.send(embed=embed, view=view)
 
-    async def resolve_battle(self, interaction):
-        player1_card = self.player1_card
-        player2_card = self.player2_card
+    # --- SURRENDER LOGIC ---
+    async def request_surrender(self, interaction):
+        if interaction.user.id not in [self.player1.id, self.player2.id]:
+            return await interaction.response.send_message("Only battlers can surrender!", ephemeral=True)
+        
+        view = SurrenderConfirmView(self, interaction.user)
+        await interaction.response.send_message("Are you sure you want to surrender? This will count as a loss.", view=view, ephemeral=True)
 
-        self.player1_used_cards.append(player1_card)
-        self.player2_used_cards.append(player2_card)
-
-        round_result = ""
-
-        if self.player1_action == 'attack' and self.player2_action == 'defense':
-            if player1_card.attack > player2_card.defense:
-                self.player1_wins += 1
-                round_result = f"{self.player1.name} wins the round with Attack vs Defense!"
-                await self.update_round_stats(self.player1, self.player2, interaction)
-            elif player1_card.attack < player2_card.defense:
-                self.player2_wins += 1
-                round_result = f"{self.player2.name} wins the round with Defense vs Attack!"
-                await self.update_round_stats(self.player2, self.player1, interaction)
-            else:
-                round_result = "It's a draw!"
-        elif self.player1_action == 'defense' and self.player2_action == 'attack':
-            if player1_card.defense > player2_card.attack:
-                self.player1_wins += 1
-                round_result = f"{self.player1.name} wins the round with Defense vs Attack!"
-                await self.update_round_stats(self.player1, self.player2, interaction)
-            elif player1_card.defense < player2_card.attack:
-                self.player2_wins += 1
-                round_result = f"{self.player2.name} wins the round with Attack vs Defense!"
-                await self.update_round_stats(self.player2, self.player1, interaction)
-            else:
-                round_result = "It's a draw!"
-        elif self.player1_action == 'speed' and self.player2_action == 'speed':
-            if player1_card.speed > player2_card.speed:
-                self.player1_wins += 1
-                round_result = f"{self.player1.name} wins the round with Speed vs Speed!"
-                await self.update_round_stats(self.player1, self.player2, interaction)
-            elif player1_card.speed < player2_card.speed:
-                self.player2_wins += 1
-                round_result = f"{self.player2.name} wins the round with Speed vs Speed!"
-                await self.update_round_stats(self.player2, self.player1, interaction)
-            else:
-                round_result = "It's a draw!"
-
-        embed = discord.Embed(title="Round Result", description=round_result)
-        embed.add_field(name=f"{self.player1.name}'s Card", value=f"Name: {player1_card.name}\nAttack: {player1_card.attack}\nDefense: {player1_card.defense}\nSpeed: {player1_card.speed}", inline=True)
-        embed.add_field(name=f"{self.player2.name}'s Card", value=f"Name: {player2_card.name}\nAttack: {player2_card.attack}\nDefense: {player2_card.defense}\nSpeed: {player2_card.speed}", inline=True)
-        await interaction.channel.send(embed=embed)
-
-        del self.player1_card
-        del self.player2_card
-        self.player1_action = None
-        self.player2_action = None
-
-        self.turn = self.player2 if self.turn == self.player1 else self.player1
-        self.round += 1
-
-        if self.player1_wins >= 3:
-            await self.update_battle_stats(self.player1, self.player2, interaction)
-            embed = discord.Embed(title="Battle Result", description=f"{self.player1.name} wins the battle!")
-            await interaction.channel.send(embed=embed)
-            return
-        elif self.player2_wins >= 3:
-            await self.update_battle_stats(self.player2, self.player1, interaction)
-            embed = discord.Embed(title="Battle Result", description=f"{self.player2.name} wins the battle!")
-            await interaction.channel.send(embed=embed)
-            return
-        else:
-            await self.parent_view.next_round(interaction)
-
-    async def update_round_stats(self, winner, loser, interaction):
-        cursor.execute('UPDATE players SET rounds_played = rounds_played + 1, rounds_won = rounds_won + 1 WHERE user_id = ?', (winner.id,))
-        cursor.execute('UPDATE players SET rounds_played = rounds_played + 1, rounds_lost = rounds_lost + 1 WHERE user_id = ?', (loser.id,))
-        conn.commit()
-        await self.check_achievements(winner.id, 'rounds_won', interaction)
-
-    async def update_battle_stats(self, winner, loser, interaction):
+    async def confirm_surrender(self, interaction, loser):
+        winner = self.player1 if loser == self.player2 else self.player2
+        
+        # Update Stats
         cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_won = battles_won + 1 WHERE user_id = ?', (winner.id,))
         cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_lost = battles_lost + 1 WHERE user_id = ?', (loser.id,))
+        
+        add_winner_coins(winner.id)
+        add_loser_coins(loser.id)
         conn.commit()
+        
         await self.check_achievements(winner.id, 'battles_won', interaction)
 
-    async def check_achievements(self, user_id, stat_type, interaction):
-        conn = sqlite3.connect('cards_game.db')
-        cursor = conn.cursor()
-
-        cursor.execute(f'SELECT {stat_type} FROM players WHERE user_id = ?', (user_id,))
-        stat_value = cursor.fetchone()[0]
-
-        if stat_type == 'rounds_won':
-            thresholds = {10: 1, 50: 2, 100: 8}
-        elif stat_type == 'battles_won':
-            thresholds = {1: 3, 10: 4, 25:5, 50:6, 100:8}
-
-        for threshold, achievement_id in thresholds.items():
-            if stat_value == threshold:
-                cursor.execute('''
-                INSERT OR IGNORE INTO user_achievements (user_id, achievement_id) VALUES (?, ?)
-                ''', (user_id, achievement_id))
-                conn.commit()
-
-                cursor.execute('SELECT title, description FROM achievements WHERE achievement_id = ?', (achievement_id,))
-                achievement = cursor.fetchone()
-
-                try:
-                    user = await interaction.client.fetch_user(user_id)
-                    if user is not None:
-                        embed = discord.Embed(
-                            title="Achievement Unlocked!",
-                            description=f"{user.mention} unlocked **{achievement[0]}**: {achievement[1]}"
-
-                        )
-                        await interaction.channel.send(content=f"{user.mention}", embed=embed)
-                    else:
-                        print(f"User with ID {user_id} not found.")
-                except discord.NotFound:
-                    print(f"User with ID {user_id} not found.")
+        embed = discord.Embed(title="🏳️ Battle Surrendered", color=discord.Color.red())
+        embed.add_field(name="Result", value=f"**{winner.name}** wins! {loser.name} has surrendered.", inline=False)
+        embed.add_field(name="Rewards", value=f"{winner.name}: +200 Coins\n{loser.name}: +100 Coins", inline=False)
         
-        conn.close()
+        await self.message.edit(embed=embed, view=None)
+        await interaction.response.edit_message(content="🏳️ You surrendered.", view=None)
 
+    # --- DRAW LOGIC ---
+    async def request_draw(self, interaction):
+        user = interaction.user
+        if user.id not in [self.player1.id, self.player2.id]:
+            return await interaction.response.send_message("Not your battle!", ephemeral=True)
 
+        # Check if this user already offered
+        if user.id in self.draw_offers:
+            return await interaction.response.send_message("You already offered a draw. Waiting for opponent...", ephemeral=True)
 
+        self.draw_offers.add(user.id)
 
-
-    def compare_stats(self, stat1, stat2, player1, player2):
-        if stat1 > stat2:
-            self.player1_wins += 1
-            return player1
-        elif stat1 < stat2:
-            self.player2_wins += 1
-            return player2
-        return None
-
-
-
-battles = {}
-
-class DeckSelect(Select):
-    def __init__(self, user_id, user, callback):
-        self.user_id = user_id
-        self.callback_func = callback
-        cursor.execute('SELECT deck_name FROM decks WHERE user_id = ?', (user_id,))
-        decks = cursor.fetchall()
-        options = [discord.SelectOption(label=deck[0], description=f"{user}'s deck") for deck in decks]
-        super().__init__(placeholder='Select a deck...', min_values=1, max_values=1, options=options)
-    
-    async def callback(self, interaction: discord.Interaction):
-        deck_name = self.values[0]
-        await self.callback_func(interaction.user, deck_name, interaction)
-
-class DeckSelectView(View):
-    def __init__(self, user_id, user, callback):
-        super().__init__()
-        self.add_item(DeckSelect(user_id, user, callback))
-
-class BattleButton(Button):
-    def __init__(self, label, user1, user2, battle, action):
-        super().__init__(label=label, style=discord.ButtonStyle.primary)
-        self.user1 = user1
-        self.user2 = user2
-        self.battle = battle
-        self.action = action
-
-    async def callback(self, interaction: discord.Interaction):
-        print(f"[LOG] {interaction.user.name} clicked {self.action} button.")
+        # If BOTH have offered (meaning 2nd person clicked it)
+        if len(self.draw_offers) >= 2:
+            return await self.confirm_draw(interaction)
         
-        if interaction.user != self.battle.turn:
-            await interaction.response.send_message(f"It's not your turn!", ephemeral=True)
-            print(f"[LOG] {interaction.user.name} tried to play out of turn.")
+        # If only one person offered, update the view to show "Accept Draw"
+        opponent = self.player2 if user == self.player1 else self.player1
+        await interaction.response.send_message(f"🤝 Draw offer sent to {opponent.name}!", ephemeral=True)
+        
+        # Refresh the current view to update button color/text
+        await self.update_game_state()
+
+    async def confirm_draw(self, interaction):
+        cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
+        cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
+        
+        add_loser_coins(self.player1.id)
+        add_loser_coins(self.player2.id)
+        conn.commit()
+
+        embed = discord.Embed(title="🤝 Battle Drawn", description="Both players agreed to a mutual draw.", color=discord.Color.greyple())
+        embed.add_field(name="Rewards", value="Both players received +100 Coins", inline=False)
+        
+        await self.message.edit(embed=embed, view=None)
+        # Handle the interaction response if it came from a button click
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except:
+            pass
+
+    def get_valid_deck(self, player):
+        full_deck = self.player1_deck if player.id == self.player1.id else self.player2_deck
+        used = self.player1_used_cards if player.id == self.player1.id else self.player2_used_cards
+        return [c for c in full_deck if c not in used]
+
+    async def update_game_state(self, interaction=None):
+        # 1. SETUP
+        if self.phase == "SETUP":
+            if self.player1_deck and self.player2_deck:
+                self.phase = "ACTION"
+                await self.update_game_state(interaction)
             return
 
-        if interaction.user == self.battle.player1:
-            self.battle.player1_action = self.action
-            print(f"[LOG] {self.battle.player1.name} action set to {self.battle.player1_action}")
-            if self.action == 'attack':
-                self.battle.player2_action = 'defense'
-            elif self.action == 'defense':
-                self.battle.player2_action = 'attack'
-            else:
-                self.battle.player2_action = 'speed'
-            action_msg = (f"**{self.battle.player1.name}** chose **{self.battle.player1_action}**. "
-                          f"**{self.battle.player2.name}** will counter with **{self.battle.player2_action}**.")
-        else:
-            self.battle.player2_action = self.action
-            print(f"[LOG] {self.battle.player2.name} action set to {self.battle.player2_action}")
-            if self.action == 'attack':
-                self.battle.player1_action = 'defense'
-            elif self.action == 'defense':
-                self.battle.player1_action = 'attack'
-            else:
-                self.battle.player1_action = 'speed'
-            action_msg = (f"**{self.battle.player2.name}** chose **{self.battle.player2_action}**. "
-                          f"**{self.battle.player1.name}** will counter with **{self.battle.player1_action}**.")
-
-        embed = discord.Embed(title="Action Selection Phase", description=action_msg)
-        await interaction.channel.send(embed=embed)
-
-        # Both players need to select their cards now
-        card_select_view = CardSelectView(self.battle.player1, self.battle.player2, self.battle, self.battle.player1_action, self.battle.player2_action)
-        embed = discord.Embed(title="Card Selection Phase", description="Both players, select a card from your deck to play.")
-        await interaction.channel.send(embed=embed, view=card_select_view)
-
-
-
-
-
-class CardSelect(Select):
-    def __init__(self, player, opponent, battle, player_action, opponent_action):
-        self.player = player
-        self.opponent = opponent
-        self.battle = battle
-        self.player_action = player_action
-        self.opponent_action = opponent_action
-
-        options = [discord.SelectOption(label=card.name, description=f"ID: {card.card_id}") for card in battle.get_deck(player)]
-        super().__init__(placeholder='Select a card...', min_values=1, max_values=1, options=options)
-    
-    async def callback(self, interaction: discord.Interaction):
-        # Check if the interaction is from the correct user
-        if interaction.user != self.player:
-            await interaction.response.send_message("You are not allowed to select this card.", ephemeral=True)
-            return
-
-        card_name = self.values[0]
-        card = next(card for card in self.battle.get_deck(self.player) if card.name == card_name)
-        print(f"[LOG] {self.player.name} selected {card.name} for {self.player_action}.")
-
-        if self.player == self.battle.player1:
-            self.battle.player1_card = card
-            print(f"[LOG] Player 1 Card set: {card.name} - Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}")
-        else:
-            self.battle.player2_card = card
-            print(f"[LOG] Player 2 Card set: {card.name} - Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}")
-
-        log_embed = discord.Embed(title="Card Selection Log", description=f"{self.player.name} selected {card.name}.")
-        await interaction.response.send_message(embed=log_embed, ephemeral=True)
-
-        # Check if both players have selected their cards
-        if hasattr(self.battle, 'player1_card') and hasattr(self.battle, 'player2_card'):
-            await self.battle.resolve_battle(interaction)
-        else:
-            # Prompt the other player to select their card
-            action_msg = (f"**{self.opponent.name}**, please select your card to counter **{self.player.name}**'s **{self.player_action}**.")
-            card_select_view = CardSelectView(self.opponent, self.player, self.battle, self.opponent_action, self.player_action)
-            embed = discord.Embed(title=f"{self.opponent.name}, select your card", description=action_msg)
-            await interaction.channel.send(embed=embed, view=card_select_view)
-
-
-
-
-
-class CardSelectView(View):
-    def __init__(self, player, opponent, battle, player_action, opponent_action):
-        super().__init__()
-        self.add_item(CardSelect(player, opponent, battle, player_action, opponent_action))
-
-    async def next_round(self, interaction):
-        battle = self.battle
-        print(f"[LOG] Starting round {battle.round} with {battle.turn.name}'s turn.")
-        embed = discord.Embed(title=f"Round {battle.round}", description=f"{battle.turn.name}'s turn")
-        view = View()
-        view.add_item(BattleButton(label="Attack", user1=battle.player1, user2=battle.player2, battle=battle, action='attack'))
-        view.add_item(BattleButton(label="Defense", user1=battle.player1, user2=battle.player2, battle=battle, action='defense'))
-        view.add_item(BattleButton(label="Speed", user1=battle.player1, user2=battle.player2, battle=battle, action='speed'))
-        await interaction.channel.send(embed=embed, view=view)
-
-
-
-
-
-class BattleAcceptButton(Button):
-    def __init__(self, challenger, challengee, parent_view):
-        super().__init__(label="Accept Battle", style=discord.ButtonStyle.green)
-        self.challenger = challenger
-        self.challengee = challengee
-        self.parent_view = parent_view
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user != self.challengee:
-            await interaction.response.send_message("You cannot accept this battle.", ephemeral=True)
-            return
-        
-        await interaction.message.edit(view=None)
-        await self.start_battle(interaction)
-
-    async def start_battle(self, interaction):
-        print(f"[LOG] Starting battle between {self.challenger.name} and {self.challengee.name}.")
-        # Set the challenger as player 1 and the other user as player 2
-        battle = Battle(self.challenger, self.challengee, [], [], self.parent_view)
-        battle.turn = self.challenger  # Challenger always starts first
-
-        async def set_deck(player, deck_name, interaction):
-            deck = get_deck(player.id, deck_name)
-            print(f"[LOG] {player.name} selected deck {deck_name}.")
-            if player == battle.player1:
-                battle.player1_deck = deck
-            else:
-                battle.player2_deck = deck
+        # 2. ACTION
+        if self.phase == "ACTION":
+            embed = discord.Embed(title=f"⚔️ Round {self.round} | Action Phase", color=discord.Color.blue())
+            embed.add_field(name="Score", value=f"{self.player1.name}: {self.player1_wins} | {self.player2.name}: {self.player2_wins} | Draws: {self.draws}", inline=False)
+            embed.add_field(name="Current Turn", value=f"It is **{self.turn_player.name}'s** turn to choose the tactic.", inline=False)
             
-            if battle.player1_deck and battle.player2_deck:
-                battles[(self.challenger.id, self.challengee.id)] = battle
-                await self.display_decks(interaction, battle)
+            view = ActionView(self, self.turn_player)
+            
+            # Helper to edit message safely
+            if interaction and not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, view=view)
+            else:
+                await self.message.edit(embed=embed, view=view)
 
-        embed = discord.Embed(title="Battle Accepted", description=f"{self.challengee.name} accepted the battle! {self.challenger.name} goes first.")
-        await interaction.channel.send(embed=embed)
+        # 3. CARD SELECT
+        elif self.phase == "CARD_SELECT":
+            p1_status = "✅ Selected" if self.p1_card else "⏳ Waiting..."
+            p2_status = "✅ Selected" if self.p2_card else "⏳ Waiting..."
 
-        await interaction.channel.send(f"{self.challenger.name}, select your deck:", view=DeckSelectView(self.challenger.id, self.challenger, set_deck))
-        await interaction.channel.send(f"{self.challengee.name}, select your deck:", view=DeckSelectView(self.challengee.id, self.challengee, set_deck))
+            embed = discord.Embed(title=f"⚔️ Round {self.round} | Card Phase", color=discord.Color.gold())
+            embed.add_field(name="Tactics", value=f"{self.player1.name}: **{self.p1_action.upper()}**\n{self.player2.name}: **{self.p2_action.upper()}**", inline=False)
+            embed.add_field(name="Card Selection", value=f"**{self.player1.name}:** {p1_status}\n**{self.player2.name}:** {p2_status}", inline=False)
+            
+            view = CardSelectView(self)
+            
+            if interaction and not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, view=view)
+            else:
+                await self.message.edit(embed=embed, view=view)
 
-    async def display_decks(self, interaction, battle):
-        # Display Player 1 Deck
-        player1_deck = "\n".join([f"**{card.name}** - ID: {card.card_id}, Overall: {card.overall}" for card in battle.player1_deck])
-        embed = discord.Embed(title=f"{battle.player1.name}'s Deck", description=player1_deck)
-        await interaction.channel.send(embed=embed)
+        # 4. RESULT
+        elif self.phase == "RESULT":
+            result_text, winner = self.calculate_winner()
+            self.update_round_db_stats(winner)
+            
+            if winner: await self.check_achievements(winner.id, 'rounds_won', interaction)
+
+            self.player1_used_cards.append(self.p1_card)
+            self.player2_used_cards.append(self.p2_card)
+
+            embed = discord.Embed(title=f"⚔️ Round {self.round} Result", description=result_text, color=discord.Color.purple())
+            embed.add_field(name=f"{self.player1.name} ({self.p1_action})", value=f"**{self.p1_card.name}**\n⭐ {self.p1_card.overall}\n⚔️ {self.p1_card.attack} | 🛡️ {self.p1_card.defense} | ⚡ {self.p1_card.speed}", inline=True)
+            embed.add_field(name=f"{self.player2.name} ({self.p2_action})", value=f"**{self.p2_card.name}**\n⭐ {self.p2_card.overall}\n⚔️ {self.p2_card.attack} | 🛡️ {self.p2_card.defense} | ⚡ {self.p2_card.speed}", inline=True)
+            
+            if self.player1_wins >= 3 or self.player2_wins >= 3 or self.round == 5:
+                self.phase = "GAME_OVER"
+                await self.end_game(interaction, embed) 
+            else:
+                view = NextRoundView(self)
+                if interaction and not interaction.response.is_done():
+                    await interaction.response.edit_message(embed=embed, view=view)
+                else:
+                    await self.message.edit(embed=embed, view=view)
+
+    def calculate_winner(self):
+        p1_val, p2_val, stat_name = 0, 0, "Stat"
+        if self.p1_action == 'attack' and self.p2_action == 'defense':
+             p1_val, p2_val, stat_name = self.p1_card.attack, self.p2_card.defense, "Attack vs Defense"
+        elif self.p1_action == 'defense' and self.p2_action == 'attack':
+             p1_val, p2_val, stat_name = self.p1_card.defense, self.p2_card.attack, "Defense vs Attack"
+        else: 
+             p1_val, p2_val, stat_name = self.p1_card.speed, self.p2_card.speed, "Speed vs Speed"
+
+        if p1_val > p2_val:
+            self.player1_wins += 1
+            return f"🏆 **{self.player1.name}** Wins with {stat_name}!", self.player1
+        elif p2_val > p1_val:
+            self.player2_wins += 1
+            return f"🏆 **{self.player2.name}** Wins with {stat_name}!", self.player2
+        else:
+            if self.p1_card.overall > self.p2_card.overall:
+                self.player1_wins += 1
+                return f"⚠️ Stats Draw! **{self.player1.name}** wins on Overall ({self.p1_card.overall} vs {self.p2_card.overall})!", self.player1
+            elif self.p2_card.overall > self.p1_card.overall:
+                self.player2_wins += 1
+                return f"⚠️ Stats Draw! **{self.player2.name}** wins on Overall ({self.p2_card.overall} vs {self.p1_card.overall})!", self.player2
+            else:
+                self.draws += 1
+                return f"🤝 **It's a Draw!** Both stats and overall are equal!", None
+
+    def update_round_db_stats(self, winner):
+        cursor.execute('UPDATE players SET rounds_played = rounds_played + 1 WHERE user_id = ?', (self.player1.id,))
+        cursor.execute('UPDATE players SET rounds_played = rounds_played + 1 WHERE user_id = ?', (self.player2.id,))
         
-        # Display Player 2 Deck
-        player2_deck = "\n".join([f"**{card.name}** - ID: {card.card_id}, Overall: {card.overall}" for card in battle.player2_deck])
-        embed = discord.Embed(title=f"{battle.player2.name}'s Deck", description=player2_deck)
-        await interaction.channel.send(embed=embed)
+        if winner:
+            loser = self.player2 if winner == self.player1 else self.player1
+            cursor.execute('UPDATE players SET rounds_won = rounds_won + 1 WHERE user_id = ?', (winner.id,))
+            cursor.execute('UPDATE players SET rounds_lost = rounds_lost + 1 WHERE user_id = ?', (loser.id,))
+        else:
+            cursor.execute('UPDATE players SET rounds_drawn = rounds_drawn + 1 WHERE user_id = ?', (self.player1.id,))
+            cursor.execute('UPDATE players SET rounds_drawn = rounds_drawn + 1 WHERE user_id = ?', (self.player2.id,))
+        conn.commit()
 
-        await self.start_round(interaction, battle)
+    async def end_game(self, interaction, last_round_embed):
+        winner, loser, is_draw = None, None, False
+        if self.player1_wins > self.player2_wins:
+            winner, loser = self.player1, self.player2
+        elif self.player2_wins > self.player1_wins:
+            winner, loser = self.player2, self.player1
+        else:
+            is_draw = True
 
-    async def start_round(self, interaction, battle):
-        embed = discord.Embed(title=f"Round {battle.round}", description=f"{battle.turn.name}'s turn to choose an action")
-        view = View()
-        view.add_item(BattleButton(label="Attack", user1=battle.player1, user2=battle.player2, battle=battle, action='attack'))
-        view.add_item(BattleButton(label="Defense", user1=battle.player1, user2=battle.player2, battle=battle, action='defense'))
-        view.add_item(BattleButton(label="Speed", user1=battle.player1, user2=battle.player2, battle=battle, action='speed'))
-        await interaction.channel.send(embed=embed, view=view)
+        cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player1.id,))
+        cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player2.id,))
 
+        if is_draw:
+             cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
+             cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
+             add_loser_coins(self.player1.id)
+             add_loser_coins(self.player2.id)
+             
+             embed = discord.Embed(title="🤝 Battle Drawn 🤝", color=discord.Color.greyple())
+             embed.add_field(name="Result", value="The battle ended in a draw!", inline=False)
+             embed.add_field(name="Rewards", value="Both players received +100 Coins", inline=False)
+        else:
+            cursor.execute('UPDATE players SET battles_won = battles_won + 1 WHERE user_id = ?', (winner.id,))
+            cursor.execute('UPDATE players SET battles_lost = battles_lost + 1 WHERE user_id = ?', (loser.id,))
+            add_winner_coins(winner.id)
+            add_loser_coins(loser.id)
+            await self.check_achievements(winner.id, 'battles_won', interaction)
 
-class BattleDeclineButton(Button):
-    def __init__(self, challenger, challengee):
-        super().__init__(label="Decline Battle", style=discord.ButtonStyle.red)
-        self.challenger = challenger
-        self.challengee = challengee
+            embed = discord.Embed(title="🏆 Battle Finished 🏆", color=discord.Color.gold())
+            embed.add_field(name="Winner", value=f"**{winner.name}**", inline=False)
+            embed.add_field(name="Rewards", value=f"{winner.name}: +200 Coins\n{loser.name}: +100 Coins", inline=False)
+        
+        embed.add_field(name="Final Score", value=f"{self.player1.name}: {self.player1_wins} | {self.player2.name}: {self.player2_wins} | Draws: {self.draws}", inline=False)
+        if last_round_embed:
+             embed.add_field(name="Last Round", value=last_round_embed.description, inline=False)
+
+        # Use self.message to edit because interaction might be stale/from previous step
+        await self.message.edit(embed=embed, view=None)
+
+    async def check_achievements(self, user_id, stat_type, interaction):
+        try:
+            conn = sqlite3.connect('cards_game.db')
+            cursor = conn.cursor()
+            cursor.execute(f'SELECT {stat_type} FROM players WHERE user_id = ?', (user_id,))
+            stat_value = cursor.fetchone()[0]
+            if stat_type == 'rounds_won':
+                thresholds = {10: 1, 50: 2, 100: 8}
+            elif stat_type == 'battles_won':
+                thresholds = {1: 3, 10: 4, 25: 5, 50: 6, 100: 8}
+            for threshold, achievement_id in thresholds.items():
+                if stat_value == threshold:
+                    cursor.execute('INSERT OR IGNORE INTO user_achievements (user_id, achievement_id) VALUES (?, ?)', (user_id, achievement_id))
+                    conn.commit()
+                    cursor.execute('SELECT title, description FROM achievements WHERE achievement_id = ?', (achievement_id,))
+                    achievement = cursor.fetchone()
+                    if achievement and interaction:
+                        user = await interaction.client.fetch_user(user_id)
+                        await interaction.followup.send(f"🎉 **Achievement Unlocked!** {user.mention} unlocked **{achievement[0]}**: {achievement[1]}", ephemeral=True)
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error checking achievements: {e}")
+
+# ---------------- VIEWS ----------------
+
+# Helper Function to configure Surrender/Draw buttons dynamically
+def configure_battle_buttons(view, battle):
+    # Surrender Button (Always Red)
+    view.add_item(SurrenderButton(battle))
+    
+    # Draw Button (Dynamic)
+    label = "Offer Draw"
+    style = discord.ButtonStyle.secondary
+    
+    # If someone offered, change look for visual urgency
+    if len(battle.draw_offers) > 0:
+        label = "Accept Draw 🤝"
+        style = discord.ButtonStyle.success
+        
+    view.add_item(DrawButton(battle, label=label, style=style))
+
+# --- BUTTON CLASSES ---
+
+class SurrenderButton(discord.ui.Button):
+    def __init__(self, battle):
+        super().__init__(style=discord.ButtonStyle.danger, label="Surrender", emoji="🏳️", row=2)
+        self.battle = battle
 
     async def callback(self, interaction: discord.Interaction):
-        if interaction.user != self.challengee:
-            await interaction.response.send_message("You cannot decline this battle.", ephemeral=True)
-            return
+        await self.battle.request_surrender(interaction)
 
-        await interaction.message.edit(view=None)
-        await interaction.channel.send(f"{self.challengee.name} declined the battle.")
+class DrawButton(discord.ui.Button):
+    def __init__(self, battle, label="Offer Draw", style=discord.ButtonStyle.secondary):
+        super().__init__(style=style, label=label, emoji="🤝", row=2)
+        self.battle = battle
 
-class BattleView(View):
-    def __init__(self, challenger, challengee):
+    async def callback(self, interaction: discord.Interaction):
+        await self.battle.request_draw(interaction)
+
+class SurrenderConfirmView(discord.ui.View):
+    def __init__(self, battle, user):
         super().__init__(timeout=60)
+        self.battle = battle
+        self.user = user
+
+    @discord.ui.button(label="Yes, Surrender", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id: return
+        await self.battle.confirm_surrender(interaction, self.user)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.grey)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id: return
+        await interaction.response.edit_message(content="Surrender cancelled.", view=None)
+
+# --- PHASE VIEWS ---
+
+class SetupView(discord.ui.View):
+    def __init__(self, battle):
+        super().__init__(timeout=120)
+        self.battle = battle
+        self.add_item(DeckSelectMenu(battle, battle.player1))
+        self.add_item(DeckSelectMenu(battle, battle.player2))
+
+    @discord.ui.button(label="Cancel Setup", style=discord.ButtonStyle.red, row=2)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in [self.battle.player1.id, self.battle.player2.id]:
+            return await interaction.response.send_message("Not your battle.", ephemeral=True)
+        await interaction.response.edit_message(content="Battle setup cancelled.", embed=None, view=None)
+
+class DeckSelectMenu(discord.ui.Select):
+    def __init__(self, battle, player):
+        self.battle = battle
+        self.player = player
+        cursor.execute('SELECT deck_name FROM decks WHERE user_id = ?', (player.id,))
+        decks = cursor.fetchall()
+        options = [discord.SelectOption(label=d[0]) for d in decks] if decks else [discord.SelectOption(label="No Decks", value="none")]
+        super().__init__(placeholder=f"{player.name}, choose...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.player.id:
+            return await interaction.response.send_message("Not for you!", ephemeral=True)
+        
+        deck_name = self.values[0]
+        if deck_name == "none": return await interaction.response.send_message("Create a deck first!", ephemeral=True)
+
+        deck_cards = get_deck(self.player.id, deck_name)
+        if self.player.id == self.battle.player1.id: self.battle.player1_deck = deck_cards
+        else: self.battle.player2_deck = deck_cards
+
+        if self.battle.player1_deck and self.battle.player2_deck:
+             await self.battle.update_game_state(interaction)
+        else:
+            embed = interaction.message.embeds[0]
+            index = 0 if self.player.id == self.battle.player1.id else 1
+            embed.set_field_at(index, name=self.player.name, value=f"✅ Ready ({deck_name})", inline=True)
+            await interaction.response.edit_message(embed=embed, view=self.view)
+
+class ActionView(discord.ui.View):
+    def __init__(self, battle, turn_player):
+        super().__init__(timeout=60)
+        self.battle = battle
+        self.turn_player = turn_player
+        
+        # Add Surrender/Draw buttons dynamically
+        configure_battle_buttons(self, battle)
+
+    @discord.ui.button(label="Attack", style=discord.ButtonStyle.danger)
+    async def attack(self, interaction: discord.Interaction, button: discord.ui.Button): await self.process_action(interaction, "attack")
+
+    @discord.ui.button(label="Defense", style=discord.ButtonStyle.primary)
+    async def defense(self, interaction: discord.Interaction, button: discord.ui.Button): await self.process_action(interaction, "defense")
+        
+    @discord.ui.button(label="Speed", style=discord.ButtonStyle.success)
+    async def speed(self, interaction: discord.Interaction, button: discord.ui.Button): await self.process_action(interaction, "speed")
+
+    async def process_action(self, interaction, action):
+        if interaction.user.id != self.turn_player.id:
+            return await interaction.response.send_message("Not your turn!", ephemeral=True)
+        
+        if self.turn_player.id == self.battle.player1.id:
+            self.battle.p1_action = action
+            if action == "attack": self.battle.p2_action = "defense"
+            elif action == "defense": self.battle.p2_action = "attack"
+            else: self.battle.p2_action = "speed"
+        else:
+            self.battle.p2_action = action
+            if action == "attack": self.battle.p1_action = "defense"
+            elif action == "defense": self.battle.p1_action = "attack"
+            else: self.battle.p1_action = "speed"
+            
+        self.battle.phase = "CARD_SELECT"
+        await self.battle.update_game_state(interaction)
+
+class CardSelectView(discord.ui.View):
+    def __init__(self, battle):
+        super().__init__(timeout=60)
+        self.battle = battle
+        self.add_item(CardDropdown(battle, battle.player1))
+        self.add_item(CardDropdown(battle, battle.player2))
+        
+        # Add Surrender/Draw buttons dynamically
+        configure_battle_buttons(self, battle)
+
+class CardDropdown(discord.ui.Select):
+    def __init__(self, battle, player):
+        self.battle = battle
+        self.player = player
+        cards = battle.get_valid_deck(player)
+        options = [discord.SelectOption(label=c.name, description=f"OVR: {c.overall}", value=str(c.card_id)) for c in cards]
+        super().__init__(placeholder=f"{player.name}'s Card", options=options, min_values=1, max_values=1)
+    
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.player.id: return await interaction.response.send_message("Not for you!", ephemeral=True)
+            
+        selected_id = int(self.values[0])
+        deck = self.battle.player1_deck if self.player.id == self.battle.player1.id else self.battle.player2_deck
+        card_obj = next((c for c in deck if c.card_id == selected_id), None)
+        
+        if self.player.id == self.battle.player1.id: self.battle.p1_card = card_obj
+        else: self.battle.p2_card = card_obj
+
+        if self.battle.p1_card and self.battle.p2_card:
+            self.battle.phase = "RESULT"
+            await self.battle.update_game_state(interaction)
+        else:
+            await self.battle.update_game_state(interaction)
+
+class NextRoundView(discord.ui.View):
+    def __init__(self, battle):
+        super().__init__(timeout=60)
+        self.battle = battle
+        self.ready_players = set()
+        
+        # Add Surrender/Draw buttons dynamically
+        configure_battle_buttons(self, battle)
+
+    @discord.ui.button(label="Ready for Next Round", style=discord.ButtonStyle.primary, row=0)
+    async def next_round(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in [self.battle.player1.id, self.battle.player2.id]: return await interaction.response.send_message("Not your battle.", ephemeral=True)
+        if interaction.user.id in self.ready_players: return await interaction.response.send_message("Waiting for opponent...", ephemeral=True)
+
+        self.ready_players.add(interaction.user.id)
+        if len(self.ready_players) == 2:
+            self.battle.p1_action = None
+            self.battle.p2_action = None
+            self.battle.p1_card = None
+            self.battle.p2_card = None
+            self.battle.round += 1
+            
+            if self.battle.turn_player.id == self.battle.player1.id: self.battle.turn_player = self.battle.player2
+            else: self.battle.turn_player = self.battle.player1
+
+            self.battle.phase = "ACTION"
+            await self.battle.update_game_state(interaction)
+        else:
+            await interaction.response.send_message(f"{interaction.user.name} is ready! Waiting for opponent...", ephemeral=False)
+
+
+# ---------------- COMMANDS ----------------
+
+class BattleInviteView(discord.ui.View):
+    def __init__(self, ctx, challenger, challengee):
+        super().__init__(timeout=60)
+        self.ctx = ctx
         self.challenger = challenger
         self.challengee = challengee
-        self.add_item(BattleAcceptButton(challenger, challengee, self))
-        self.add_item(BattleDeclineButton(challenger, challengee))
 
-    async def next_round(self, interaction):
-        battle = battles[(self.challenger.id, self.challengee.id)]
-        print(f"[LOG] Starting round {battle.round} with {battle.turn.name}'s turn.")
-        embed = discord.Embed(title=f"Round {battle.round}", description=f"{battle.turn.name}'s turn")
-        view = View()
-        view.add_item(BattleButton(label="Attack", user1=battle.player1, user2=battle.player2, battle=battle, action='attack'))
-        view.add_item(BattleButton(label="Defense", user1=battle.player1, user2=battle.player2, battle=battle, action='defense'))
-        view.add_item(BattleButton(label="Speed", user1=battle.player1, user2=battle.player2, battle=battle, action='speed'))
-        await interaction.channel.send(embed=embed, view=view)
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.challengee.id:
+            return await interaction.response.send_message("Not for you!", ephemeral=True)
+        
+        battle_instance = Battle(self.ctx, self.challenger, self.challengee)
+        await interaction.response.edit_message(content="Battle Accepted! Loading Arena...", embed=None, view=None)
+        await battle_instance.start()
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.challengee.id:
+            return await interaction.response.send_message("Not for you!", ephemeral=True)
+        await interaction.response.edit_message(content="Battle Declined.", embed=None, view=None)
 
 
-
-@bot.command(name='battle')
+@bot.hybrid_command(name='battle', description="Challenge a player to a battle")
 async def battle(ctx, user: discord.User):
+    if user.id == ctx.author.id:
+        return await ctx.send("You cannot battle yourself.")
+        
     ensure_player_exists(ctx.author.id, ctx.author.name)
     ensure_player_exists(user.id, user.name)
     
     embed = discord.Embed(title="Battle Request", description=f"{ctx.author.name} has challenged {user.name} to a battle!")
-    await ctx.send(embed=embed, view=BattleView(ctx.author, user))
+    view = BattleInviteView(ctx, ctx.author, user)
+    await ctx.send(embed=embed, view=view)
 
 
 def get_deck(user_id, deck_name):
@@ -2128,6 +2427,11 @@ def get_deck(user_id, deck_name):
     return cards
 
 #---------------------------------------------------------COINS AND SALES-------------------------------------------------------------------------------------
+
+def increment_cards_sold(user_id):
+    cursor.execute('UPDATE players SET cards_sold = cards_sold + 1 WHERE user_id = ?', (user_id,))
+    conn.commit()
+    
 
 def check_card_ownership(user_id, card_id):
     conn = sqlite3.connect('cards_game.db')
@@ -2162,9 +2466,11 @@ class ConfirmButton(Button):
     async def callback(self, interaction):
         add_coins(self.user_id, self.sale_value)
         remove_card_from_inventory(self.user_id, self.card.card_id)
+        increment_cards_sold(self.user_id)
         
         embed = interaction.message.embeds[0]
         embed.add_field(name="Status", value="Sold", inline=True)
+        embed.set_image(url=f"attachment://{self.card.image_path.split('/')[-1]}")  # Ensure the image is correctly set
         await interaction.response.edit_message(embed=embed, content="The card has been sold.", view=None)
         logger.info(f'Card {self.card.card_id} sold by user {self.user_id}')
 
@@ -2176,7 +2482,7 @@ class DeclineButton(Button):
         await interaction.response.edit_message(content="The sale has been declined.", view=None)
 
 
-@bot.command(name='sell')
+@bot.hybrid_command(name='sell', description="Sell a card for coins")
 async def sell(ctx, card_id: int):
     card = get_card_by_id(card_id)
     if not card or not check_card_ownership(ctx.author.id, card_id):  # Check if the card exists and belongs to the user
@@ -2220,7 +2526,15 @@ PACKS = {
         "buyable": True,
         "cost": 2500
     },
+
     3: {
+        "name": "hero_pack",
+        "display_name": "Hero Pack",
+        "buyable": True,
+        "cost": 1750  
+    },
+
+    4: {
         "name": "tester_pack",
         "display_name": "Tester Pack",
         "buyable": False,
@@ -2230,16 +2544,16 @@ PACKS = {
 
 
 
-@bot.command(name='shop')
+@bot.hybrid_command(name='shop', description="View the pack shop")
 async def shop(ctx):
-    embed = discord.Embed(title="Shop", description="Available packs for purchase:\nUse `!buy pack_no` to buy the pack.")
+    embed = discord.Embed(title="Shop", description="Available packs for purchase:\nUse `buy pack_no` to buy the pack.")
     for pack_id, pack_info in PACKS.items():
         if pack_info["buyable"]:
             embed.add_field(name=pack_info["display_name"], value=f"Pack ID: {pack_id}\nCost: {pack_info['cost']} coins", inline=False)
     await ctx.send(embed=embed)
 
 
-@bot.command(name='buy')
+@bot.hybrid_command(name='buy', description="Buy a pack with coins")
 async def buy(ctx, pack_id: int):
     user_id = ctx.author.id
     
@@ -2260,10 +2574,11 @@ async def buy(ctx, pack_id: int):
         return
     
     deduct_coins(user_id, cost)
-    add_pack_to_user(user_id, pack_name)
+    add_pack_to_user(user_id, pack['name'])
     await ctx.send(f"You have bought a {pack['display_name']}.")
+    logger.info(f"User {ctx.author.name} bought a {pack['display_name']} pack.")
 
-@bot.command(name='packs')
+@bot.hybrid_command(name='packs', description="View your unopened packs")
 async def packs(ctx):
     user_id = ctx.author.id
     user_packs = get_user_packs(user_id)
@@ -2298,26 +2613,27 @@ def get_user_packs(user_id):
         return dict(zip(columns, row))
     return {}
 
-@bot.command(name='givepack')
-@commands.has_permissions(administrator=True)
-async def give_pack(ctx, user: discord.User, pack_id: int):
-    if pack_id not in PACKS:
-        await ctx.send("Invalid pack ID.")
-        return
-    
-    if PACKS[pack_id]["buyable"]:
-        await ctx.send("This pack can be bought from the shop. Use the shop command to purchase it.")
-        return
-
-    add_pack_to_user(user.id, PACKS[pack_id]["name"])
-    await ctx.send(f"Given {PACKS[pack_id]['display_name']} to {user.name}.")
 
 def add_pack_to_user(user_id, pack_name):
     conn = sqlite3.connect('cards_game.db')
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO user_packs (user_id, pack_name) VALUES (?, ?)', (user_id, pack_name))
+    
+    # Check if the user exists in the packs table
+    cursor.execute('SELECT * FROM packs WHERE user_id = ?', (user_id,))
+    user_packs = cursor.fetchone()
+    
+    if user_packs:
+        # User exists, update the pack quantity
+        cursor.execute(f'UPDATE packs SET {pack_name} = {pack_name} + 1 WHERE user_id = ?', (user_id,))
+    else:
+        # User does not exist, insert a new record with initial quantities
+        cursor.execute('INSERT INTO packs (user_id, rare_player_pack, icon_pack, hero_pack, tester_pack) VALUES (?, 0, 0, 0, 0)', (user_id,))
+        cursor.execute(f'UPDATE packs SET {pack_name} = {pack_name} + 1 WHERE user_id = ?', (user_id,))
+    
     conn.commit()
     conn.close()
+
+
 
 
 def remove_pack_from_user(user_id, pack_name):
@@ -2361,7 +2677,7 @@ def is_duplicate_card(user_id, card_id):
     return result > 0
 
 
-@bot.command(name='open')
+@bot.hybrid_command(name='open', description="Open a pack")
 async def open(ctx, pack_id: int):
     user_id = ctx.author.id
 
@@ -2382,6 +2698,8 @@ async def open(ctx, pack_id: int):
     elif pack_id == 2:
         card_obtained = await open_icon_pack(ctx, user_id)
     elif pack_id == 3:
+        card_obtained = await open_hero_pack(ctx, user_id)
+    elif pack_id == 4:
         card_obtained = await open_tester_pack(ctx, user_id)
 
     remove_pack_from_user(user_id, pack_name)
@@ -2478,6 +2796,43 @@ async def open_icon_pack(ctx, user_id):
     await ctx.send(embed=embed, file=file)
     return name
 
+async def open_hero_pack(ctx, user_id):
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+
+    card = None
+    while True:
+        cursor.execute("SELECT card_id, name, card_rarity, card_type, attack, defense, speed, overall, league, nation, image_path FROM cards WHERE card_type = 'Hero' ORDER BY RANDOM() LIMIT 1")
+        card = cursor.fetchone()
+
+        if card and not is_duplicate_card(user_id, card[0]):
+            break
+
+    card_id, name, rarity, card_type, attack, defense, speed, overall, league, nation, image_path = card
+
+    # Increment the copies attribute of the chosen card
+    cursor.execute('UPDATE cards SET copies = copies + 1 WHERE card_id = ?', (card_id,))
+    conn.commit()
+
+    # Add the card to the user's inventory
+    add_card_to_inventory(user_id, card_id)
+    conn.close()
+
+    embed = discord.Embed(title="You have received a card!", description=f"**{name}**")
+    embed.set_image(url=f"attachment://{image_path.split('/')[-1]}")
+    embed.add_field(name="Rarity", value=rarity, inline=True)
+    embed.add_field(name="Type", value=card_type, inline=True)
+    embed.add_field(name="Attack", value=attack, inline=True)
+    embed.add_field(name="Defense", value=defense, inline=True)
+    embed.add_field(name="Speed", value=speed, inline=True)
+    embed.add_field(name="Overall", value=overall, inline=True)
+    embed.add_field(name="League", value=league, inline=True)
+    embed.add_field(name="Nation", value=nation, inline=True)
+    embed.add_field(name="Copies", value=1, inline=True)
+    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+    file = discord.File(image_path, filename=image_path.split('/')[-1])
+    await ctx.send(embed=embed, file=file)
+    return name
 
 
 async def open_tester_pack(ctx, user_id):
@@ -2542,5 +2897,325 @@ async def open_tester_pack(ctx, user_id):
     return "5 Cards"
 
 
+#---------------------------------DECKS-----
 
-bot.run('MTI1NTUyMDczMjU3MDU4MzA0MA.GGR3VR.r99Gkd5-NQu14bKEE-NNzQJtx1x2AboXii1B5M')
+@bot.hybrid_command(name='decks', description="View list of your decks")
+async def view_decks(ctx, user: discord.User = None):
+    if user is None:
+        user = ctx.author
+
+    ensure_player_exists(user.id, user.name)
+    cursor.execute('SELECT deck_name, cards FROM decks WHERE user_id = ?', (user.id,))
+    decks = cursor.fetchall()
+
+    if not decks:
+        await ctx.send(f"{user.name} has no decks.")
+        return
+
+    embed = discord.Embed(title=f"{user.name}'s Decks")
+    for deck_name, cards in decks:
+        card_ids = cards.split(',')
+        card_details = []
+        for card_id in card_ids:
+            cursor.execute('SELECT name FROM cards WHERE card_id = ?', (card_id,))
+            card_data = cursor.fetchone()
+            if card_data:
+                card_details.append(card_data[0])
+        embed.add_field(name=deck_name, value=', '.join(card_details), inline=False)
+
+    await ctx.send(embed=embed)
+
+
+@bot.hybrid_command(name='create_deck', description="Create a battle deck (Requires 5 Card IDs)")
+async def create_deck(ctx, deck_name: str, card1: int, card2: int, card3: int, card4: int, card5: int):
+    card_ids = [card1, card2, card3, card4, card5]
+
+    if len(card_ids) != 5:
+        await ctx.send("A deck must contain exactly 5 cards.")
+        return
+
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+
+    # --- SECURITY CHECK: OWNERSHIP ---
+    # We loop through every card ID to make sure the user actually owns it
+    for card_id in card_ids:
+        cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card_id))
+        if cursor.fetchone() is None:
+            await ctx.send(f"⛔ You cannot create this deck because you do not own the card with ID **{card_id}**.")
+            return
+
+    try:
+        # If they own all cards, we proceed to create the deck
+        add_deck(ctx.author.id, deck_name, card_ids)
+        await ctx.send(f"✅ Deck '**{deck_name}**' created successfully!")
+    except ValueError as e:
+        await ctx.send(f"❌ Error: {str(e)}")
+
+
+@bot.hybrid_command(name='edit_deck', description="Edit an existing deck (Requires 5 Card IDs)")
+async def edit_deck(ctx, deck_name: str, card1: int, card2: int, card3: int, card4: int, card5: int):
+    card_ids = [card1, card2, card3, card4, card5]
+    
+    if len(card_ids) != 5:
+        await ctx.send("A deck must contain exactly 5 cards.")
+        return
+
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+
+    # 1. Check if deck exists
+    cursor.execute('SELECT deck_name FROM decks WHERE user_id = ? AND deck_name = ?', (ctx.author.id, deck_name))
+    if cursor.fetchone() is None:
+        await ctx.send(f"❌ No deck found with the name '**{deck_name}**'.")
+        return
+
+    # 2. Check Ownership & 3. Check for Duplicate Players
+    player_ids_in_deck = set()
+
+    for card_id in card_ids:
+        # Check Ownership
+        cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card_id))
+        if cursor.fetchone() is None:
+            await ctx.send(f"⛔ You cannot use ID **{card_id}** because you do not own it.")
+            return
+
+        # Check for Duplicate Player IDs (e.g. 2 different cards of the same player)
+        cursor.execute('SELECT player_id, name FROM cards WHERE card_id = ?', (card_id,))
+        card_data = cursor.fetchone()
+        if card_data:
+            player_id, player_name = card_data
+            if player_id in player_ids_in_deck:
+                 await ctx.send(f"⛔ Invalid Deck: You cannot have **{player_name}** twice in the same deck!")
+                 return
+            player_ids_in_deck.add(player_id)
+
+    # 4. Save Changes
+    try:
+        cards_str = ','.join(map(str, card_ids))
+        cursor.execute('UPDATE decks SET cards = ? WHERE user_id = ? AND deck_name = ?', (cards_str, ctx.author.id, deck_name))
+        conn.commit()
+        await ctx.send(f"✅ Deck '**{deck_name}**' updated successfully!")
+    except Exception as e:
+        await ctx.send(f"❌ Error updating deck: {e}")
+
+
+
+
+
+#---------------------DECK VIEWER------------------------
+
+def generate_lineup_image(deck_cards):
+    # 1. Load Background
+    try:
+        bg = Image.open("pitch.png").convert("RGBA")
+    except FileNotFoundError:
+        bg = Image.new('RGBA', (1080, 1350), (0, 128, 0, 255))
+
+    # --- FORCE RESIZE: Make the background HD (1080x1350) ---
+    # This ensures the output is always big, even if pitch.png is small
+    bg = bg.resize((1080, 1350), Image.Resampling.LANCZOS)
+    bg_width, bg_height = bg.size
+
+    # ---------------- SORTING LOGIC ----------------
+    pool = deck_cards[:]
+    
+    # Sort for 2-1-2 Formation
+    pool.sort(key=lambda x: x.attack, reverse=True)
+    attackers = pool[:2]
+    for card in attackers: pool.remove(card)
+
+    pool.sort(key=lambda x: x.defense, reverse=True)
+    defenders = pool[:2]
+    for card in defenders: pool.remove(card)
+
+    midfielder = pool[0]
+    sorted_lineup = [attackers[0], attackers[1], midfielder, defenders[0], defenders[1]]
+
+    # ---------------- POSITIONING (2-1-2) ----------------
+    positions = [
+        (0.28, 0.20), # Attacker Left 
+        (0.72, 0.20), # Attacker Right 
+        (0.50, 0.50), # Midfielder 
+        (0.28, 0.80), # Defender Left 
+        (0.72, 0.80)  # Defender Right 
+    ]
+
+    # ---------------- DRAWING ----------------
+    for i, card in enumerate(sorted_lineup):
+        try:
+            card_img = Image.open(card.image_path).convert("RGBA")
+            
+            # Card size relative to the NEW huge background (35% width)
+            target_width = int(bg_width * 0.35) 
+            aspect_ratio = card_img.height / card_img.width
+            target_height = int(target_width * aspect_ratio)
+            
+            card_img = card_img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
+            pos_x_percent, pos_y_percent = positions[i]
+            x = int((bg_width * pos_x_percent) - (target_width / 2))
+            y = int((bg_height * pos_y_percent) - (target_height / 2))
+
+            bg.paste(card_img, (x, y), card_img)
+
+        except Exception as e:
+            print(f"Error loading image for card {card.name}: {e}")
+            continue
+
+    buffer = io.BytesIO()
+    bg.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+@bot.hybrid_command(name='view_deck', description="Visualize a specific deck with lineup")
+async def view_deck(ctx, deck_name: str):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    
+    deck_cards = get_deck(ctx.author.id, deck_name)
+    if deck_cards is None:
+        await ctx.send(f"No deck found with the name '{deck_name}'.")
+        return
+    
+    if len(deck_cards) != 5:
+        await ctx.send("This deck does not have 5 cards, cannot generate lineup.")
+        return
+
+    # 1. GENERATE IMAGE
+    image_buffer = await bot.loop.run_in_executor(None, generate_lineup_image, deck_cards)
+    file = discord.File(fp=image_buffer, filename=f"{deck_name}.png")
+
+    # 2. GENERATE TEXT DETAILS
+    # Updated Order: Overall -> Attack -> Defense -> Speed (with Lightning)
+    description_text = ""
+    for card in deck_cards:
+        description_text += (
+            f"**{card.name}**\n"
+            f"⭐ {card.overall} | ⚔️ {card.attack} | 🛡️ {card.defense} | ⚡ {card.speed}\n\n"
+        )
+
+    # 3. CREATE EMBED
+    embed = discord.Embed(
+        title=f"📋 Deck Details: {deck_name}", 
+        description=description_text, 
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"Owner: {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
+
+    # 4. SEND AS ONE MESSAGE
+    await ctx.send(file=file, embed=embed)
+
+
+
+
+#-----------------------------------ECONOMY-----------------------------------------
+
+@bot.hybrid_command(name='coins', description="Check your coin balance")
+async def coins(ctx, user: discord.User = None):
+    if user is None:
+        user = ctx.author
+
+    ensure_player_exists(user.id, user.name)
+    cursor.execute('SELECT coins FROM players WHERE user_id = ?', (user.id,))
+    coins = cursor.fetchone()[0]
+
+    embed = discord.Embed(title=f"{user.name}'s Coins", description=f'''{user.mention} has {coins} coins.
+    Earn more coins by selling cards or battling other players''', color=discord.Color.gold())
+    await ctx.send(embed=embed)
+
+def add_winner_coins(user_id):
+    cursor.execute('UPDATE players SET coins = coins + 200 WHERE user_id = ?', (user_id,))
+    conn.commit()
+
+def add_loser_coins(user_id):
+    cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (user_id,))
+    conn.commit()
+
+#-----------------------------------ADMIN COMMANDS----------------------------------
+
+@bot.command(name='give_coins')
+async def give_coins(ctx, user_id: int, amount: int):
+    # Use the list loaded from .env
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("You do not have permission to use this command.")
+        return
+
+    if amount <= 0:
+        await ctx.send("Amount must be positive.")
+        return
+
+    cursor.execute('SELECT name FROM players WHERE user_id = ?', (user_id,))
+    user_name = cursor.fetchone()
+    if not user_name:
+        await ctx.send("User not found.")
+        return
+
+    cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (amount, user_id))
+    conn.commit()
+    
+    await ctx.send(f"Gave {amount} coins to user ID {user_id}.")
+    logger.info(f"Admin {ctx.author.name} gave {amount} coins to user ID {user_id}.")
+
+
+
+
+@bot.command(name='give_card')
+async def give_player(ctx, user_id: int, card_id: int):
+    if ctx.author.id not in ADMIN_IDS:
+        return await ctx.send("You do not have permission to use this command.")
+
+    card = get_card_by_id(card_id)
+    if not card:
+        await ctx.send("Card not found.")
+        return
+
+    cursor.execute('SELECT name FROM players WHERE user_id = ?', (user_id,))
+    user_name = cursor.fetchone()
+    if not user_name:
+        await ctx.send("User not found.")
+        return
+    
+    cursor.execute('UPDATE cards SET copies = copies + 1 WHERE card_id = ?', (card_id,))
+    add_card_to_inventory(user_id, card_id)
+   
+    conn.commit()
+    
+    await ctx.send(f"Gave {card.name} to user ID {user_id}.")
+    logger.info(f"Admin {ctx.author.name} gave card {card_id} to user ID {user_id}.")
+
+
+
+
+@bot.command(name='remove_card')
+async def remove_player(ctx, user_id: int, card_id: int):
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("You do not have permission to use this command.")
+        return
+
+    if not check_card_ownership(user_id, card_id):
+        await ctx.send(f"User ID {user_id} does not own this card.")
+        return
+    
+    remove_card_from_inventory(user_id, card_id)
+    conn.commit()
+    
+    await ctx.send(f"Removed card {card_id} from user ID {user_id}.")
+    logger.info(f"Admin {ctx.author.name} removed card {card_id} from user ID {user_id}.")
+
+
+#--------------------SLASH COMMANDS------------------------
+
+@bot.command(name='sync')
+async def sync(ctx):
+    if ctx.author.id not in ADMIN_IDS: # Changed to 'not in list'
+        return await ctx.send("You are not a bot admin.")
+
+    await ctx.send("Syncing commands... this might take a moment.")
+    try:
+        synced = await bot.tree.sync()
+        await ctx.send(f"✅ Synced {len(synced)} commands globally.")
+    except Exception as e:
+        await ctx.send(f"❌ Sync failed: {e}")
+
+
+#---------------------RUN BOT------------------------
+
+bot.run(TOKEN)
