@@ -375,7 +375,7 @@ async def about(ctx):
     embed.add_field(name="Version", value=f"```{BOT_VERSION}```", inline=True)
     embed.add_field(name="Creator", value=CREATOR, inline=True)
     embed.add_field(name="Description", value=DESCRIPTION, inline=False)
-    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
     
     await ctx.send(embed=embed)
 
@@ -546,7 +546,7 @@ async def itscominghome(ctx):
         embed.add_field(name="Nation", value=card.nation, inline=True)
         embed.add_field(name="Copies", value=card.copies, inline=True)
         embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
         await ctx.author.send(embed=embed, file=discord.File(card.image_path))
         logger.info(f'{ctx.author.name} received a special card {card.name} (ID: {card.card_id}) using !itscominghome')
@@ -612,7 +612,7 @@ async def jogabonito(ctx):
         embed.add_field(name="Nation", value=card.nation, inline=True)
         embed.add_field(name="Copies", value=card.copies, inline=True)
         embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
         await ctx.author.send(embed=embed, file=discord.File(card.image_path))
         logger.info(f'{ctx.author.name} received a special card {card.name} (ID: {card.card_id}) using !jogabonito')
@@ -678,7 +678,7 @@ async def pineappleonpizza(ctx):
         embed.add_field(name="Nation", value=card.nation, inline=True)
         embed.add_field(name="Copies", value=card.copies, inline=True)
         embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
         await ctx.author.send(embed=embed, file=discord.File(card.image_path))
         logger.info(f'{ctx.author.name} received a special card {card.name} (ID: {card.card_id}) using !pineappleonpizza')
@@ -745,7 +745,7 @@ async def mannschaft(ctx):
         embed.add_field(name="Nation", value=card.nation, inline=True)
         embed.add_field(name="Copies", value=card.copies, inline=True)
         embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
         await ctx.author.send(embed=embed, file=discord.File(card.image_path))
         logger.info(f'{ctx.author.name} received a special card {card.name} (ID: {card.card_id}) using !mannschaft')
@@ -811,7 +811,7 @@ async def theflyingdutchmen(ctx):
         embed.add_field(name="Nation", value=card.nation, inline=True)
         embed.add_field(name="Copies", value=card.copies, inline=True)
         embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
         await ctx.author.send(embed=embed, file=discord.File(card.image_path))
         logger.info(f'{ctx.author.name} received a special card {card.name} (ID: {card.card_id}) using !theflyingdutchmen')
@@ -877,7 +877,7 @@ async def blues(ctx):
         embed.add_field(name="Nation", value=card.nation, inline=True)
         embed.add_field(name="Copies", value=card.copies, inline=True)
         embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+        embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
         await ctx.author.send(embed=embed, file=discord.File(card.image_path))
         logger.info(f'{ctx.author.name} received a special card {card.name} (ID: {card.card_id}) using !blues')
@@ -1265,7 +1265,7 @@ class ViewCardSelect(discord.ui.Select):
         embed.add_field(name="Nation", value=selected_card.nation, inline=True)
         embed.add_field(name="Copies", value=selected_card.copies, inline=True)
         embed.set_image(url=f"attachment://{selected_card.image_path.split('/')[-1]}")
-        embed.set_footer(text=f"Requested by {self.user.name}", icon_url=self.user.avatar.url)
+        embed.set_footer(text=f"Requested by {self.user.name}", icon_url=self.user.display_avatar.url)
 
         await interaction.response.send_message(embed=embed, file=discord.File(selected_card.image_path))
         logger.info(f'{self.user.name} viewed card {selected_card.name} (ID: {selected_card.card_id})')
@@ -1317,7 +1317,7 @@ async def view(ctx, *, identifier: str):
                 embed.add_field(name="Ownership", value=ownership, inline=True)
 
             embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
-            embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+            embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
             await ctx.send(embed=embed, file=discord.File(card.image_path))
             logger.info(f'{ctx.author.name} viewed card {card.name} (ID: {card.card_id})')
@@ -1768,99 +1768,161 @@ class NextButton(discord.ui.Button):
 
 
 
-#---------------------------------------------------------TRADES-------------------------------------------------------------------------------------
-
-
-from discord.ui import View, Button
-
-@bot.hybrid_command(name='trade', description="Trade cards with another player")
-async def trade(ctx, your_card_id: int, other_user: discord.User, their_card_id: int):
-    ensure_player_exists(ctx.author.id, ctx.author.name)
-    ensure_player_exists(other_user.id, other_user.name)
-
-    # Fetch your card details
-    cursor.execute('SELECT inventories.card_id, cards.name, cards.attack, cards.defense, cards.speed, cards.height, cards.club, cards.position, cards.overall, cards.image_path, cards.card_rarity, cards.card_type, cards.league, cards.nation FROM inventories JOIN cards ON inventories.card_id = cards.card_id WHERE inventories.user_id = ? AND inventories.card_id = ?', (ctx.author.id, your_card_id))
-    your_card = cursor.fetchone()
-    
-    # Fetch their card details
-    cursor.execute('SELECT inventories.card_id, cards.name, cards.attack, cards.defense, cards.speed, cards.height, cards.club, cards.position, cards.overall, cards.image_path, cards.card_rarity, cards.card_type, cards.league, cards.nation FROM inventories JOIN cards ON inventories.card_id = cards.card_id WHERE inventories.user_id = ? AND inventories.card_id = ?', (other_user.id, their_card_id))
-    their_card = cursor.fetchone()
-
-    # Log card details
-    logger.info(f"Your card details: {your_card}")
-    logger.info(f"Their card details: {their_card}")
-
-    if not your_card or not their_card:
-        await ctx.send("One of you does not own the card you're trying to trade.")
-        return
-
-    view = TradeView(ctx, your_card, other_user, their_card)
-    embed = discord.Embed(title="Trade Offer", description=f"{ctx.author.name} wants to trade cards with {other_user.name}.")
-    embed.add_field(name=f"{ctx.author.name}'s Card", value=f"**{your_card[1]}**\nAttack: {your_card[2]}, Defense: {your_card[3]}, Speed: {your_card[4]}, Height: {your_card[5]}, Club: {your_card[6]}, Position: {your_card[7]}, Overall: {your_card[8]}, Rarity: {your_card[10]}, Type: {your_card[11]}, League: {your_card[12]}, Nation: {your_card[13]}", inline=True)
-    embed.add_field(name=f"{other_user.name}'s Card", value=f"**{their_card[1]}**\nAttack: {their_card[2]}, Defense: {their_card[3]}, Speed: {their_card[4]}, Height: {their_card[5]}, Club: {their_card[6]}, Position: {their_card[7]}, Overall: {their_card[8]}, Rarity: {their_card[10]}, Type: {their_card[11]}, League: {their_card[12]}, Nation: {their_card[13]}", inline=True)
-    embed.set_image(url=f"attachment://{your_card[9].split('/')[-1]}")
-    embed.set_thumbnail(url=f"attachment://{their_card[9].split('/')[-1]}")
-    
-    await ctx.send(embed=embed, view=view, files=[discord.File(your_card[9]), discord.File(their_card[9])])
+# ---------------------------------------------------------TRADES REFACTORED-------------------------------------------------------------------------------------
 
 class TradeView(discord.ui.View):
     def __init__(self, ctx, your_card, other_user, their_card):
-        super().__init__(timeout=60)  # Timeout after 60 seconds
+        super().__init__(timeout=120)
         self.ctx = ctx
         self.your_card = your_card
         self.other_user = other_user
         self.their_card = their_card
+        self.message = None
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.other_user.id
+    async def on_timeout(self):
+        if self.message:
+            for child in self.children:
+                child.disabled = True
+            await self.message.edit(content=f"⏰ Trade offer to {self.other_user.mention} timed out.", view=self)
 
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="Accept Trade", style=discord.ButtonStyle.green)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Log card details
-        logger.info(f"Accept trade initiated by {interaction.user.id}")
-        logger.info(f"Your card ID: {self.your_card[0]}")
-        logger.info(f"Their card ID: {self.their_card[0]}")
+        if interaction.user.id != self.other_user.id:
+            return await interaction.response.send_message("This trade offer is not for you!", ephemeral=True)
 
-        cursor.execute('SELECT card_id FROM inventories WHERE user_id = ? AND card_id = ?', (self.ctx.author.id, self.your_card[0]))
-        your_card_check = cursor.fetchone()
-        cursor.execute('SELECT card_id FROM inventories WHERE user_id = ? AND card_id = ?', (self.other_user.id, self.their_card[0]))
-        their_card_check = cursor.fetchone()
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        
+        # Verify ownership one last time
+        cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.ctx.author.id, self.your_card.card_id))
+        sender_has = cursor.fetchone()
+        cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.other_user.id, self.their_card.card_id))
+        receiver_has = cursor.fetchone()
 
-        # Log card ownership check results
-        logger.info(f"Your card after check: {your_card_check}")
-        logger.info(f"Their card after check: {their_card_check}")
+        if not sender_has or not receiver_has:
+            conn.close()
+            embed = interaction.message.embeds[0]
+            embed.color = discord.Color.red()
+            embed.title = "❌ Trade Failed"
+            embed.description = "One of the players no longer owns the required card."
+            return await interaction.response.edit_message(embed=embed, view=None)
 
-        if not your_card_check or not their_card_check:
-            await self.ctx.send("One of you does not own the card you're trying to trade.")
-            return
+        try:
+            # --- FIX: Update user_id AND increment trade_count ---
+            
+            # 1. Move Author's card to Other User (Increment trade_count)
+            cursor.execute('''
+                UPDATE inventories 
+                SET user_id = ?, trade_count = trade_count + 1 
+                WHERE user_id = ? AND card_id = ?
+            ''', (self.other_user.id, self.ctx.author.id, self.your_card.card_id))
+            
+            # 2. Move Other User's card to Author (Increment trade_count)
+            cursor.execute('''
+                UPDATE inventories 
+                SET user_id = ?, trade_count = trade_count + 1 
+                WHERE user_id = ? AND card_id = ?
+            ''', (self.ctx.author.id, self.other_user.id, self.their_card.card_id))
+            
+            conn.commit()
+        except Exception as e:
+            conn.close()
+            logger.error(f"Trade Error: {e}")
+            return await interaction.response.send_message("Database error occurred.", ephemeral=True)
+        
+        conn.close()
 
-        # Check if users already have the cards they are being offered
-        cursor.execute('SELECT card_id FROM inventories WHERE user_id = ? AND card_id = ?', (self.other_user.id, self.your_card[0]))
-        other_user_has_your_card = cursor.fetchone()
-        cursor.execute('SELECT card_id FROM inventories WHERE user_id = ? AND card_id = ?', (self.ctx.author.id, self.their_card[0]))
-        you_have_their_card = cursor.fetchone()
+        embed = interaction.message.embeds[0]
+        embed.title = "✅ Trade Successful"
+        embed.description = f"**{self.ctx.author.name}** and **{self.other_user.name}** have swapped cards!"
+        embed.color = discord.Color.green()
+        
+        # Update visual fields
+        embed.set_field_at(0, name=f"Now owned by {self.other_user.name}", value=f"**{self.your_card.name}**", inline=True)
+        embed.set_field_at(1, name=f"Now owned by {self.ctx.author.name}", value=f"**{self.their_card.name}**", inline=True)
 
-        if other_user_has_your_card:
-            await self.ctx.send(f"{self.other_user.name} already has the card **{self.your_card[1]}**.")
-            return
-
-        if you_have_their_card:
-            await self.ctx.send(f"You already have the card **{self.their_card[1]}**.")
-            return
-
-        # Perform the trade
-        cursor.execute('UPDATE inventories SET user_id = ? WHERE user_id = ? AND card_id = ?', (self.other_user.id, self.ctx.author.id, self.your_card[0]))
-        cursor.execute('UPDATE inventories SET user_id = ? WHERE user_id = ? AND card_id = ?', (self.ctx.author.id, self.other_user.id, self.their_card[0]))
-        conn.commit()
-
-        await interaction.response.send_message(f"Trade completed! {self.ctx.author.name} traded card **{self.your_card[1]}** with {self.other_user.name}'s card **{self.their_card[1]}**.")
+        await interaction.response.edit_message(embed=embed, view=None)
         self.stop()
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Trade declined.")
-        await self.ctx.send(f"{self.other_user.name} has declined the trade.")
+        if interaction.user.id != self.other_user.id:
+            return await interaction.response.send_message("This trade offer is not for you!", ephemeral=True)
+
+        embed = interaction.message.embeds[0]
+        embed.title = "❌ Trade Declined"
+        embed.description = f"{self.other_user.name} declined the trade offer."
+        embed.color = discord.Color.red()
+
+        await interaction.response.edit_message(embed=embed, view=None)
         self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.grey)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.ctx.author.id:
+            return await interaction.response.send_message("Only the person who started the trade can cancel it.", ephemeral=True)
+
+        embed = interaction.message.embeds[0]
+        embed.title = "🚫 Trade Cancelled"
+        embed.description = f"{self.ctx.author.name} cancelled the trade request."
+        embed.color = discord.Color.dark_grey()
+
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+
+@bot.hybrid_command(name='trade', description="Trade cards with another player")
+async def trade(ctx, your_card_id: int, other_user: discord.User, their_card_id: int):
+    # 1. Self Trade Check
+    if ctx.author.id == other_user.id:
+        return await ctx.send("You cannot trade with yourself.")
+
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    ensure_player_exists(other_user.id, other_user.name)
+
+    # 2. Fetch Card Objects
+    your_card = get_card_by_id(your_card_id)
+    their_card = get_card_by_id(their_card_id)
+
+    if not your_card:
+        return await ctx.send(f"Card ID **{your_card_id}** not found.")
+    if not their_card:
+        return await ctx.send(f"Card ID **{their_card_id}** not found.")
+
+    # 3. Ownership Checks
+    if not check_card_ownership(ctx.author.id, your_card_id):
+        return await ctx.send(f"You do not own the card **{your_card.name}** (ID: {your_card_id}).")
+    
+    if not check_card_ownership(other_user.id, their_card_id):
+        return await ctx.send(f"{other_user.name} does not own the card **{their_card.name}** (ID: {their_card_id}).")
+
+    # 4. Duplicate Checks
+    if check_card_ownership(ctx.author.id, their_card_id):
+        return await ctx.send(f"You already own **{their_card.name}**. Cannot trade for duplicates.")
+    
+    if check_card_ownership(other_user.id, your_card_id):
+        return await ctx.send(f"{other_user.name} already owns **{your_card.name}**. Cannot trade duplicates.")
+
+    # 5. Build UI
+    view = TradeView(ctx, your_card, other_user, their_card)
+    
+    embed = discord.Embed(title="🤝 Trade Offer", description=f"{ctx.author.mention} wants to trade with {other_user.mention}!", color=discord.Color.gold())
+    
+    embed.add_field(name=f"{ctx.author.name} offers:", value=f"**{your_card.name}**\n⭐ {your_card.overall} | 🆔 {your_card.card_id}", inline=True)
+    embed.add_field(name=f"{other_user.name} offers:", value=f"**{their_card.name}**\n⭐ {their_card.overall} | 🆔 {their_card.card_id}", inline=True)
+    
+    embed.set_thumbnail(url=f"attachment://{your_card.image_path.split('/')[-1]}")
+    embed.set_image(url=f"attachment://{their_card.image_path.split('/')[-1]}")
+    embed.set_footer(text="Both players must verify the cards before accepting.")
+
+    # --- FIX: Added 'content' to ping the user ---
+    msg = await ctx.send(
+        content=f"Hey {other_user.mention}, you have a trade offer!", 
+        embed=embed, 
+        view=view, 
+        files=[discord.File(your_card.image_path), discord.File(their_card.image_path)]
+    )
+    view.message = msg
 
 
 def add_deck(user_id, deck_name, card_ids):
@@ -2751,7 +2813,7 @@ async def open_rare_player_pack(ctx, user_id):
     embed.add_field(name="League", value=league, inline=True)
     embed.add_field(name="Nation", value=nation, inline=True)
     embed.add_field(name="Copies", value=1, inline=True)
-    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
     file = discord.File(image_path, filename=image_path.split('/')[-1])
     await ctx.send(embed=embed, file=file)
     return name
@@ -2791,7 +2853,7 @@ async def open_icon_pack(ctx, user_id):
     embed.add_field(name="League", value=league, inline=True)
     embed.add_field(name="Nation", value=nation, inline=True)
     embed.add_field(name="Copies", value=1, inline=True)
-    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
     file = discord.File(image_path, filename=image_path.split('/')[-1])
     await ctx.send(embed=embed, file=file)
     return name
@@ -2829,7 +2891,7 @@ async def open_hero_pack(ctx, user_id):
     embed.add_field(name="League", value=league, inline=True)
     embed.add_field(name="Nation", value=nation, inline=True)
     embed.add_field(name="Copies", value=1, inline=True)
-    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.avatar.url)
+    embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
     file = discord.File(image_path, filename=image_path.split('/')[-1])
     await ctx.send(embed=embed, file=file)
     return name
@@ -3066,25 +3128,31 @@ def generate_lineup_image(deck_cards):
     buffer.seek(0)
     return buffer
 
-@bot.hybrid_command(name='view_deck', description="Visualize a specific deck with lineup")
-async def view_deck(ctx, deck_name: str):
-    ensure_player_exists(ctx.author.id, ctx.author.name)
+@bot.hybrid_command(name='view_deck', description="Visualize a specific deck (Optional: @user to view theirs)")
+async def view_deck(ctx, deck_name: str, user: discord.User = None):
+    # 1. Determine who we are looking at
+    target_user = user or ctx.author
+
+    # 2. Ensure they exist in DB (just in case)
+    ensure_player_exists(target_user.id, target_user.name)
     
-    deck_cards = get_deck(ctx.author.id, deck_name)
+    # 3. Get the deck using TARGET's ID
+    deck_cards = get_deck(target_user.id, deck_name)
+    
     if deck_cards is None:
-        await ctx.send(f"No deck found with the name '{deck_name}'.")
+        await ctx.send(f"❌ Deck '**{deck_name}**' not found for **{target_user.name}**.")
         return
     
     if len(deck_cards) != 5:
         await ctx.send("This deck does not have 5 cards, cannot generate lineup.")
         return
 
-    # 1. GENERATE IMAGE
+    # 4. Generate Image
+    # Note: The generation logic is the same, it just processes the cards we found
     image_buffer = await bot.loop.run_in_executor(None, generate_lineup_image, deck_cards)
     file = discord.File(fp=image_buffer, filename=f"{deck_name}.png")
 
-    # 2. GENERATE TEXT DETAILS
-    # Updated Order: Overall -> Attack -> Defense -> Speed (with Lightning)
+    # 5. Generate Text
     description_text = ""
     for card in deck_cards:
         description_text += (
@@ -3092,15 +3160,16 @@ async def view_deck(ctx, deck_name: str):
             f"⭐ {card.overall} | ⚔️ {card.attack} | 🛡️ {card.defense} | ⚡ {card.speed}\n\n"
         )
 
-    # 3. CREATE EMBED
+    # 6. Create Embed
     embed = discord.Embed(
         title=f"📋 Deck Details: {deck_name}", 
         description=description_text, 
         color=discord.Color.green()
     )
-    embed.set_footer(text=f"Owner: {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
+    # FIX: Use target_user details for the footer
+    embed.set_footer(text=f"Owner: {target_user.name}", icon_url=target_user.display_avatar.url)
 
-    # 4. SEND AS ONE MESSAGE
+    # 7. Send
     await ctx.send(file=file, embed=embed)
 
 
@@ -3180,7 +3249,6 @@ async def give_player(ctx, user_id: int, card_id: int):
     
     await ctx.send(f"Gave {card.name} to user ID {user_id}.")
     logger.info(f"Admin {ctx.author.name} gave card {card_id} to user ID {user_id}.")
-
 
 
 
