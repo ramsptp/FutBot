@@ -1687,36 +1687,47 @@ async def leaderboard_rounds_played(ctx):
     logger.info(f'{ctx.author.name} viewed the leaderboard for rounds played')
 
 
+#---------------------------------------------------------INVENTORY-------------------------------------------------------------------------------------
 import logging
 logger = logging.getLogger(__name__)
 
 @bot.hybrid_command(name='inventory', description="View your card collection")
 async def view_inventory(ctx, user: discord.User = None):
-    if user is None:
-        user = ctx.author
+    # Determine the target user (whose inventory we are looking at)
+    target_user = user or ctx.author
 
-    ensure_player_exists(user.id, user.name)
-    inventory, editions = get_player_inventory(user.id)
+    ensure_player_exists(target_user.id, target_user.name)
+    inventory, editions = get_player_inventory(target_user.id)
+    
     if inventory:
-        view = InventoryView(inventory, user, editions)
+        # Pass 'ctx' so the view knows who ran the command
+        view = InventoryView(inventory, target_user, editions, ctx)
         embed = view.update_view()
         message = await ctx.send(embed=embed, view=view)
         view.message = message
-        logger.info(f'{ctx.author.name} viewed {user.name}\'s inventory')
+        logger.info(f'{ctx.author.name} viewed {target_user.name}\'s inventory')
     else:
-        await ctx.send(f"{user.name} has no cards in their inventory.")
-        logger.info(f'{ctx.author.name} tried to view {user.name}\'s inventory but it was empty')
+        await ctx.send(f"{target_user.name} has no cards in their inventory.")
+        logger.info(f'{ctx.author.name} tried to view {target_user.name}\'s inventory but it was empty')
 
 class InventoryView(discord.ui.View):
-    def __init__(self, inventory, user, editions):
-        super().__init__(timeout=None)
+    def __init__(self, inventory, target_user, editions, ctx):
+        super().__init__(timeout=120)
         self.inventory = inventory
         self.editions = editions
-        self.user = user
+        self.target_user = target_user
+        self.ctx = ctx
         self.current_page = 0
         self.total_pages = (len(inventory) - 1) // 10 + 1
         self.message = None
         self.update_buttons()
+
+    # --- SECURITY CHECK ---
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("⛔ You cannot control this menu. Run `/inventory` yourself!", ephemeral=True)
+            return False
+        return True
 
     def update_view(self):
         start = self.current_page * 10
@@ -1724,13 +1735,14 @@ class InventoryView(discord.ui.View):
         cards = self.inventory[start:end]
         editions = self.editions[start:end]
 
+        # --- REVERTED TO OLD UI STYLE (Single Line) ---
         card_descriptions = [
             f"**{card.name} (ID: {card.card_id})** - Edition: {edition}, Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
             for card, edition in zip(cards, editions)
         ]
         description = '\n'.join(card_descriptions) if card_descriptions else "No cards to display."
 
-        embed = discord.Embed(title=f"{self.user.name}'s Inventory", description=description)
+        embed = discord.Embed(title=f"{self.target_user.name}'s Inventory", description=description)
         embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages}")
 
         return embed
@@ -1742,6 +1754,7 @@ class InventoryView(discord.ui.View):
         if self.current_page < self.total_pages - 1:
             self.add_item(NextButton())
 
+# (Keep PreviousButton and NextButton classes as they were, they work automatically with the View)
 class PreviousButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label='Previous', style=discord.ButtonStyle.primary, custom_id='previous')
