@@ -1692,23 +1692,31 @@ import logging
 logger = logging.getLogger(__name__)
 
 @bot.hybrid_command(name='inventory', description="View your card collection")
-async def view_inventory(ctx, user: discord.User = None):
-    # Determine the target user (whose inventory we are looking at)
+async def view_inventory(ctx, user: discord.User = None, search: str = None):
     target_user = user or ctx.author
-
     ensure_player_exists(target_user.id, target_user.name)
+    
     inventory, editions = get_player_inventory(target_user.id)
     
-    if inventory:
-        # Pass 'ctx' so the view knows who ran the command
-        view = InventoryView(inventory, target_user, editions, ctx)
-        embed = view.update_view()
-        message = await ctx.send(embed=embed, view=view)
-        view.message = message
-        logger.info(f'{ctx.author.name} viewed {target_user.name}\'s inventory')
-    else:
-        await ctx.send(f"{target_user.name} has no cards in their inventory.")
-        logger.info(f'{ctx.author.name} tried to view {target_user.name}\'s inventory but it was empty')
+    if not inventory:
+        return await ctx.send(f"{target_user.name} has no cards in their inventory.")
+
+    view = InventoryView(inventory, target_user, editions, ctx)
+
+    # If they provided a search term immediately in the command
+    if search:
+        # Filter immediately
+        search = search.lower()
+        view.data = [item for item in view.full_data if search in item[0].name.lower()]
+        view.filter_label = f"Name: {search}"
+        
+        if not view.data:
+            return await ctx.send(f"No cards found matching '{search}' in {target_user.name}'s inventory.")
+
+    embed = view.update_view()
+    view.update_buttons() # Refresh to show/hide Reset button
+    view.message = await ctx.send(embed=embed, view=view)
+    logger.info(f'{ctx.author.name} viewed inventory')
 
 # --- SORT DROPDOWN ---
 class SortSelect(discord.ui.Select):
@@ -1720,23 +1728,18 @@ class SortSelect(discord.ui.Select):
             discord.SelectOption(label="Sort by Defense", value="defense", description="Highest to Lowest", emoji="🛡️"),
             discord.SelectOption(label="Sort by Rarity", value="rarity", description="Least Copies First", emoji="💎")
         ]
-        super().__init__(placeholder="Sort Inventory...", min_values=1, max_values=1, options=options)
+        super().__init__(placeholder="Sort items...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         sort_key = self.values[0]
 
-        # Update the label for the title
         labels = {
-            "overall": "Overall",
-            "speed": "Pace",
-            "attack": "Attack",
-            "defense": "Defense",
-            "rarity": "Rarity"
+            "overall": "Overall", "speed": "Pace", "attack": "Attack",
+            "defense": "Defense", "rarity": "Rarity"
         }
         view.sort_label = labels.get(sort_key, "Overall")
 
-        # Sorting Logic
         if sort_key == "overall":
             view.data.sort(key=lambda x: x[0].overall, reverse=True)
         elif sort_key == "speed":
@@ -1746,35 +1749,100 @@ class SortSelect(discord.ui.Select):
         elif sort_key == "defense":
             view.data.sort(key=lambda x: x[0].defense, reverse=True)
         elif sort_key == "rarity":
-            # Sort by 'copies' in Ascending order (Least copies = Rarest)
             view.data.sort(key=lambda x: x[0].copies, reverse=False)
 
-        # Reset to page 1 after sorting so user sees top results
         view.current_page = 0
         embed = view.update_view()
         view.update_buttons()
         
         await interaction.response.edit_message(embed=embed, view=view)
 
+class FilterModal(discord.ui.Modal, title="Filter Inventory"):
+    name_input = discord.ui.TextInput(
+        label="Player Name",
+        placeholder="e.g. Messi",
+        required=False
+    )
+    
+    min_rating_input = discord.ui.TextInput(
+        label="Minimum Overall Rating",
+        placeholder="e.g. 85",
+        required=False,
+        max_length=2
+    )
+
+    def __init__(self, view):
+        super().__init__()
+        self.inv_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # 1. Get Values
+        name_query = self.name_input.value.lower()
+        rating_query = self.min_rating_input.value
+
+        # 2. Reset to full data first
+        filtered = self.inv_view.full_data[:]
+
+        # 3. Apply Name Filter
+        if name_query:
+            # Check if name contains the search string
+            filtered = [
+                item for item in filtered 
+                if name_query in item[0].name.lower()
+            ]
+
+        # 4. Apply Rating Filter
+        if rating_query.isdigit():
+            min_ovr = int(rating_query)
+            filtered = [
+                item for item in filtered 
+                if item[0].overall >= min_ovr
+            ]
+
+        # 5. Update View Data
+        self.inv_view.data = filtered
+        self.inv_view.current_page = 0
+        
+        # Update title context
+        filter_status = []
+        if name_query: filter_status.append(f"Name: {name_query}")
+        if rating_query: filter_status.append(f"OVR >= {rating_query}")
+        self.inv_view.filter_label = " | ".join(filter_status) if filter_status else "None"
+
+        embed = self.inv_view.update_view()
+        self.inv_view.update_buttons()
+        
+        await interaction.response.edit_message(embed=embed, view=self.inv_view)
+
+
+
 # --- UPDATED INVENTORY VIEW ---
 class InventoryView(discord.ui.View):
     def __init__(self, inventory, target_user, editions, ctx):
         super().__init__(timeout=120)
-        # Combine cards and editions into one list of tuples
-        self.data = list(zip(inventory, editions))
+        # Store the MASTER copy of data
+        self.full_data = list(zip(inventory, editions))
+        
+        # Store the CURRENT copy (which gets filtered/sorted)
+        self.data = self.full_data[:] 
+        
         self.target_user = target_user
         self.ctx = ctx
         self.current_page = 0
-        self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
-        self.sort_label = "Overall" # Default Sort
-        self.message = None
+        self.sort_label = "Overall"
+        self.filter_label = "None"
         
-        # Add Sort Dropdown
+        # --- FIX: Calculate total_pages here ---
+        self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
+        
+        # Initial Sort (Overall default)
+        self.data.sort(key=lambda x: x[0].overall, reverse=True)
+        
+        # Add Dropdown
         self.add_item(SortSelect())
-        # Add Navigation Buttons
+        # Add Buttons
         self.update_buttons()
 
-    # --- SECURITY CHECK ---
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("⛔ You cannot control this menu. Run `/inventory` yourself!", ephemeral=True)
@@ -1782,6 +1850,9 @@ class InventoryView(discord.ui.View):
         return True
 
     def update_view(self):
+        # Recalculate pages based on current filtered data
+        self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
+        
         start = self.current_page * 10
         end = start + 10
         page_items = self.data[start:end]
@@ -1790,28 +1861,65 @@ class InventoryView(discord.ui.View):
             f"**{card.name} (ID: {card.card_id})** - Edition: {edition}, Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
             for card, edition in page_items
         ]
-        description = '\n'.join(card_descriptions) if card_descriptions else "No cards to display."
+        description = '\n'.join(card_descriptions) if card_descriptions else "No cards found matching your filter."
 
-        # Update Title (Removed the 🎒 emoji)
-        embed = discord.Embed(
-            title=f"{self.target_user.name}'s Inventory (Sorted by: {self.sort_label})", 
-            description=description, 
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} | Total Cards: {len(self.data)}")
+        title_str = f"{self.target_user.name}'s Inventory (Sort: {self.sort_label})"
+        if self.filter_label != "None":
+            title_str += f" [Filter: {self.filter_label}]"
+
+        embed = discord.Embed(title=title_str, description=description, color=discord.Color.blue())
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} | Showing {len(self.data)} of {len(self.full_data)} Cards")
         return embed
 
     def update_buttons(self):
-        # Preserve the Dropdown (index 0) and refresh buttons
+        # Keep Dropdown (Index 0)
         dropdown = self.children[0]
         self.clear_items()
         self.add_item(dropdown)
 
+        # 1. Filter Button (Always visible)
+        self.add_item(FilterButton())
+
+        # 2. Reset Button (Only visible if filtered)
+        if len(self.data) != len(self.full_data):
+            self.add_item(ResetFilterButton())
+
+        # 3. Navigation Buttons
         if self.current_page > 0:
             self.add_item(PreviousButton())
         
         if self.current_page < self.total_pages - 1:
             self.add_item(NextButton())
+
+# --- NEW BUTTONS ---
+
+class FilterButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Filter", style=discord.ButtonStyle.secondary, emoji="🔍", row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(FilterModal(self.view))
+
+class ResetFilterButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Reset", style=discord.ButtonStyle.danger, emoji="✖️", row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        # Reset data to full copy
+        view = self.view
+        view.data = view.full_data[:]
+        view.filter_label = "None"
+        view.current_page = 0
+        
+        # Re-apply current sort
+        # (This is a simplified re-sort based on current label logic)
+        #Ideally you call a sort helper, but defaulting to Overall is fine for reset
+        view.data.sort(key=lambda x: x[0].overall, reverse=True) 
+        view.sort_label = "Overall"
+
+        embed = view.update_view()
+        view.update_buttons()
+        await interaction.response.edit_message(embed=embed, view=view)
 
 # (Keep PreviousButton and NextButton classes as they were, they work automatically with the View)
 class PreviousButton(discord.ui.Button):
