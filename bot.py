@@ -210,145 +210,89 @@ async def on_command_error(ctx, error):
 
 #---------------------------------------------------------HELP-------------------------------------------------------------------------------------
 
+# Remove default help to replace it with ours
 bot.remove_command('help')
 
-class HelpMenu(discord.ui.View):
-    def __init__(self, embeds):
-        super().__init__(timeout=None)
-        self.embeds = embeds
-        self.current_page = 0
-        self.total_pages = len(embeds)
-        self.update_buttons()
-
-    def update_view(self):
-        embed = self.embeds[self.current_page]
-        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages}")
-        return embed
-
-    def update_buttons(self):
-        self.clear_items()
-        if self.current_page > 0:
-            self.add_item(PreviousButton())
-        if self.current_page < self.total_pages - 1:
-            self.add_item(NextButton())
-
-class PreviousButton(discord.ui.Button):
+class HelpSelect(discord.ui.Select):
     def __init__(self):
-        super().__init__(label='Previous', style=discord.ButtonStyle.primary, custom_id='previous')
+        options = [
+            discord.SelectOption(label="Home", description="Back to main menu", emoji="🏠", value="home"),
+            discord.SelectOption(label="Battle Arena", description="Combat, Decks, and Tactics", emoji="⚔️", value="battle"),
+            discord.SelectOption(label="Collection", description="Inventory, Viewing Cards, Packs", emoji="🎒", value="collection"),
+            discord.SelectOption(label="Economy & Market", description="Coins, Shop, Trading, Exchange", emoji="💰", value="economy"),
+            discord.SelectOption(label="Stats & Rankings", description="Leaderboards and Achievements", emoji="🏆", value="stats"),
+            discord.SelectOption(label="Bot Info", description="Version, Changelog, Extras", emoji="ℹ️", value="info")
+        ]
+        super().__init__(placeholder="Select a category...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if view.current_page > 0:
-            view.current_page -= 1
-            embed = view.update_view()
-            view.update_buttons()
-            await interaction.response.edit_message(embed=embed, view=view)
+        value = self.values[0]
+        
+        if value == "home":
+            embed = discord.Embed(title="⚽ FutBot Help Center", description="Welcome to the ultimate football card battle bot!", color=discord.Color.gold())
+            embed.add_field(name="Getting Started", value="Use the dropdown menu below to browse specific command categories.", inline=False)
+            embed.add_field(name="Quick Start", value="`/get_starter_pack` - Get your first cards\n`/daily` - Claim free rewards\n`/create_deck` - Build a team\n`/battle` - Fight players", inline=False)
+            embed.set_footer(text="Select a category for detailed command usage.")
+        
+        elif value == "battle":
+            embed = discord.Embed(title="⚔️ Battle Arena", color=discord.Color.red())
+            embed.add_field(name="`/battle @user`", value="Challenge another player to a 5-round match.", inline=False)
+            embed.add_field(name="`/create_deck [name] [id1]...`", value="Create a battle deck with 5 specific Card IDs.", inline=False)
+            embed.add_field(name="`/edit_deck [name] [id1]...`", value="Modify an existing deck.", inline=False)
+            embed.add_field(name="`/decks`", value="View your list of decks.", inline=False)
+            embed.add_field(name="`/view_deck [name]`", value="Visualize your team lineup on the pitch.", inline=False)
+            embed.add_field(name="`/battle_logic`", value="Read the rules of combat and stat comparisons.", inline=False)
 
-class NextButton(discord.ui.Button):
+        elif value == "collection":
+            embed = discord.Embed(title="🎒 Collection & Items", color=discord.Color.blue())
+            embed.add_field(name="`/inventory`", value="View your card collection with filters and sorting.", inline=False)
+            embed.add_field(name="`/view [name_or_id]`", value="Inspect a specific card's full details and art.", inline=False)
+            embed.add_field(name="`/packs`", value="See your unopened card packs.", inline=False)
+            embed.add_field(name="`/open [pack_id]`", value="Open a pack to get new players.", inline=False)
+            embed.add_field(name="`/weight [name]`", value="Check the drop rarity chance of a card.", inline=False)
+
+        elif value == "economy":
+            embed = discord.Embed(title="💰 Economy & Market", color=discord.Color.green())
+            embed.add_field(name="`/daily`", value="Claim your daily free cards (18h Cooldown).", inline=False)
+            embed.add_field(name="`/drop`", value="Drop a card in chat for anyone to grab (30m Cooldown).", inline=False)
+            embed.add_field(name="`/coins`", value="Check your current balance.", inline=False)
+            embed.add_field(name="`/shop`", value="View packs available for purchase.", inline=False)
+            embed.add_field(name="`/buy [pack_id]`", value="Purchase a pack using coins.", inline=False)
+            embed.add_field(name="`/sell [card_id]`", value="Sell a card back to the system for coins.", inline=False)
+            embed.add_field(name="`/trade [card] @user [card]`", value="Quickly swap one card for another.", inline=False)
+            embed.add_field(name="`/exchange @user`", value="Open the advanced trading table (Cards + Coins).", inline=False)
+
+        elif value == "stats":
+            embed = discord.Embed(title="🏆 Stats & Rankings", color=discord.Color.purple())
+            embed.add_field(name="`/stats [@user]`", value="View battle records and win rates.", inline=False)
+            embed.add_field(name="`/titles`", value="View unlocked achievements.", inline=False)
+            embed.add_field(name="`/set_title`", value="Equip a title to show on your profile.", inline=False)
+            embed.add_field(name="`/lb`", value="View the Global Battles Won leaderboard.", inline=False)
+            embed.add_field(name="`/lb [bp/rw/rp]`", value="View sub-leaderboards (Played, Rounds Won, etc).", inline=False)
+
+        elif value == "info":
+            embed = discord.Embed(title="ℹ️ Bot Information", color=discord.Color.light_grey())
+            embed.add_field(name="`/about`", value="Credits and Creator info.", inline=False)
+            embed.add_field(name="`/changelog`", value="See the latest updates.", inline=False)
+            embed.add_field(name="`/facts`", value="Get a random football fact.", inline=False)
+            embed.add_field(name="`/suggest`", value="Send feedback to the developer.", inline=False)
+            embed.add_field(name="Secret Commands", value="There are hidden commands based on countries... can you find them?", inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+class HelpView(discord.ui.View):
     def __init__(self):
-        super().__init__(label='Next', style=discord.ButtonStyle.primary, custom_id='next')
-
-    async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if view.current_page < view.total_pages - 1:
-            view.current_page += 1
-            embed = view.update_view()
-            view.update_buttons()
-            await interaction.response.edit_message(embed=embed, view=view)
-
+        super().__init__(timeout=180)
+        self.add_item(HelpSelect())
 
 @bot.hybrid_command(name='help', description="Show the help menu")
 async def help_command(ctx):
-    view_commands = [
-        {"name": "view player_name", "value": "Lets you view advanced details of any card"},
-        {"name": "view_deck name", "value": "Displays all the cards in a deck"},
-        {"name": "decks @user", "value": "Displays all the decks made by a user"},
-        {"name": "weight player_name", "value": "Displays the pack weight of the card in a standard drop or daily pack."},
-        {"name": "inventory", "value": "Displays all the cards you own"},
-        {"name": "titles", "value": "Displays every achievement."},
-        {"name": "titles @user", "value": "Displays every achievement earned by the user."},
-        {"name": "coins", "value": "Displays the coins you own."}
-    ] 
-
-    battle_commands = [
-        {"name": "battle @user", "value": "Initiates a battle between you and the user"},
-        {"name": "battle_logic", "value": "Shows how battle works."},
-        {"name": "create_deck deck_name card_id1  card_id2  card_id3  card_id4  card_id5", "value": "Creates a deck with 5 cards for battle"},
-        {"name": "edit_deck deck_name card_id1  card_id2  card_id3  card_id4  card_id5", "value": "Edits an already existing deck"},
-    ]
-
-    reward_commands = [
-        {"name": "daily", "value": "Lets you claim a random card. Cooldown: 24 hours"},
-        {"name": "drop", "value": "Lets you claim a random card. Cooldown: 30 minutes"},
-        {"name": "get_starter_pack", "value": "Lets you claim 10 players, 6 rated 70-79, 3 rated 80-85, 1 rated 85+"},
-        {"name": "shop", "value": "Displays items for sale"},
-        {"name": "buy pack_no", "value": "Lets you buy a pack with coins."},
-        {"name": "sell card_id", "value": "Sells one of the cards you own in exchange for coins."}
-    ]
-
-    misc_commands = [
-        {"name": "trade yourcard_id @user theircard_id", "value": "Lets you trade one of your cards for one of theirs"},
-        {"name": "facts", "value": "Sends a random football fact."},
-        {"name": "Secret Commands", "value": "There are lots of secret commands related to football hidden throughout. Find them for heavy rewards. \n Current Hint: There are 5 secret commands all based on countries.\nPS:They are all lower case and has no special characters"},
-        {"name": "suggest", "value": "Sends suggestions to developers."}
-    ]
-
-    stat_commands = [
-         {"name": "stats", "value": "Shows your stats as a player"},
-         {"name": "set_title", "value": "Choose title to display in your !stats"}  
-    ]
-
-    leaderboard_commands = [
-         {"name": "lb", "value": "Shows players in order of battles wons"},
-         {"name": "lb bp", "value": "Shows players in order of battles played"},
-         {"name": "lb rw", "value": "Shows players in order of rounds wom"},
-         {"name": "lb rp", "value": "Shows players in order of rounds played"}
-    ]
-
-
-    categories = {
-        "View Commands": view_commands,
-        "Battle Commands": battle_commands,
-        "Reward Commands": reward_commands,
-        "Miscellaneous Commands": misc_commands,
-        "Statistic Commands": stat_commands,
-        "Leaderboard Commands": leaderboard_commands
-    }
-
-    embeds = []
-    for category, commands in categories.items():
-        embed = discord.Embed(title=f"{category}", description=f"{category} you can use:", color=0x00ff00)
-        for command in commands:
-            embed.add_field(name=command["name"], value=command["value"], inline=False)
-        embeds.append(embed)
-
-    view = HelpMenu(embeds)
-    await ctx.send(embed=embeds[0], view=view)
-
-
-@bot.hybrid_command(name='battle_logic', description="Learn how the battle system works")
-async def battle_logic(ctx):
-    embed = discord.Embed(
-        title="Battle Logic",
-        description=(
-            "Here's how the battle works:\n\n"
-            "First both players need to create a deck using create_deck command. After using !battle command, both players have to choose a deck to play with.\n"
-            "1. **Card Selection**: Each player selects a card from their deck.\n"
-            "2. **Actions**: Players choose their action for the round (Attack, Defense, or Speed).\n"
-            "3. **Comparison**: The chosen actions and card stats are compared:\n"
-            "   - **Attack vs Defense**: The player's attack is compared to the opponent's defense.\n"
-            "   - **Defense vs Attack**: The player's defense is compared to the opponent's attack.\n"
-            "   - **Speed vs Speed**: The player's speed is compared to the opponent's speed.\n"
-            "4. **Round Outcome**: The winner of the round is determined based on the comparisons:\n"
-            "   - Higher stat wins the round.\n"
-            "   - If the stats are equal, the round is a draw.\n"
-            "5. **Victory**: The first player to win a set number of rounds (e.g., 3 out of 5) wins the battle.\n\n"
-            "Good luck and have fun battling!"
-        ),
-        color=discord.Color.blue()
-    )
-
-    await ctx.send(embed=embed)
+    embed = discord.Embed(title="⚽ FutBot Help Center", description="Welcome to the ultimate football card battle bot!", color=discord.Color.gold())
+    embed.add_field(name="Getting Started", value="Use the dropdown menu below to browse specific command categories.", inline=False)
+    embed.add_field(name="Quick Start", value="`/get_starter_pack` - Get your first cards\n`/daily` - Claim free rewards\n`/create_deck` - Build a team\n`/battle` - Fight players", inline=False)
+    
+    view = HelpView()
+    await ctx.send(embed=embed, view=view)
 
 #---------------------------------------------------------ABOUT-------------------------------------------------------------------------------------
 
