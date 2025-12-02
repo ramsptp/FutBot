@@ -11,6 +11,7 @@ import io
 import time 
 import os
 from dotenv import load_dotenv
+from typing import Literal
 
 
 
@@ -154,6 +155,7 @@ conn.commit()
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # <--- ADD THIS LINE
 bot = commands.Bot(command_prefix=['f','F'], intents=intents)
 
 @bot.check
@@ -321,7 +323,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.4- Help Menu Upgrade
 1.3.5- More Filters Added
 1.3.6- Catalog Command Added
-1.3.7- Beauty Enhancements''']
+1.3.7- Beauty Enhancements
+1.3.8- Global & Server Leaderboards''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -1648,67 +1651,113 @@ def get_user_rank_and_details(user_id, criteria):
             return row
     return None
 
-# Default leaderboard for battles won
+
+#---------------------------------------------------------LEADERBOARDS-------------------------------------------------------------------------------------
+
+
+
+
+async def generate_leaderboard(ctx, stat_column, stat_name, scope):
+    # 1. Normalize Scope (Handle 'server', 'Server', 'SERVER')
+    scope = scope.title() # Converts to "Global" or "Server"
+
+    # 2. Fetch ALL players sorted by the stat
+    cursor.execute(f'SELECT user_id, name, {stat_column} FROM players ORDER BY {stat_column} DESC')
+    all_rows = cursor.fetchall()
+
+    leaderboard_data = []
+    user_rank_info = None
+    rank_counter = 1
+
+    # 3. Filter Logic
+    if scope == 'Server':
+        # FIX: Ensure we have the full member list cached
+        if ctx.guild:
+            if len(ctx.guild.members) < ctx.guild.member_count:
+                await ctx.guild.chunk() # Force download member list
+            
+            # Create a set of IDs for fast checking
+            guild_member_ids = {member.id for member in ctx.guild.members}
+        else:
+            return await ctx.send("Server leaderboard cannot be used in DMs.")
+        
+        for row in all_rows:
+            u_id, u_name, u_stat = row
+            
+            # Check if this player is in the current server
+            if u_id in guild_member_ids:
+                if len(leaderboard_data) < 10:
+                    leaderboard_data.append((rank_counter, u_name, u_stat))
+                
+                if u_id == ctx.author.id:
+                    user_rank_info = (rank_counter, u_name, u_stat)
+                
+                rank_counter += 1
+                
+            if len(leaderboard_data) == 10 and user_rank_info:
+                break
+                
+    else: # Global
+        for row in all_rows:
+            u_id, u_name, u_stat = row
+            
+            if len(leaderboard_data) < 10:
+                leaderboard_data.append((rank_counter, u_name, u_stat))
+            
+            if u_id == ctx.author.id:
+                user_rank_info = (rank_counter, u_name, u_stat)
+            
+            rank_counter += 1
+            
+            if len(leaderboard_data) == 10 and user_rank_info:
+                break
+
+    # 4. Build Embed
+    icon = "🌍" if scope == "Global" else "🏰"
+    embed = discord.Embed(title=f"{icon} {scope} Leaderboard - {stat_name}", color=discord.Color.gold())
+    
+    if not leaderboard_data:
+        embed.description = "No ranked players found in this server."
+        return await ctx.send(embed=embed)
+
+    description = ""
+    for rank, name, value in leaderboard_data:
+        medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"**{rank}.**"
+        description += f"{medal} **{name}** • {value}\n"
+
+    embed.description = description
+
+    if user_rank_info:
+        rank, name, value = user_rank_info
+        embed.set_footer(text=f"Your Rank: #{rank} • {value}")
+    else:
+        embed.set_footer(text="You are unranked or not in the top list.")
+
+    await ctx.send(embed=embed)
+
+
+# --- COMMANDS ---
+
 @bot.hybrid_group(name='lb', description="View leaderboards", fallback="battles_won")
-async def leaderboard(ctx):
-    cursor.execute('SELECT * FROM players ORDER BY battles_won DESC LIMIT 10')
-    rows = cursor.fetchall()
-    embed = discord.Embed(title="**Leaderboard - Battles Won**")
-    for i, row in enumerate(rows, start=1):
-        embed.add_field(name=f"**{i}. {row[1]}**", value=f"**Battles Won:** {row[3]}", inline=False)
+async def leaderboard(ctx, scope: str = 'Server'):
+    """Default: Battles Won (Server)"""
+    await generate_leaderboard(ctx, 'battles_won', 'Battles Won', scope)
 
-    user_rank = get_user_rank_and_details(ctx.author.id, 'battles_won')
-    if user_rank and user_rank[3] > 10:
-        embed.add_field(name=f"Your Rank: {user_rank[3]}", value=f"**{user_rank[1]}** - Battles Won: {user_rank[2]}", inline=False)
-
-    await ctx.send(embed=embed)
-    logger.info(f'{ctx.author.name} viewed the leaderboard for battles won')
-
-# Subcommands for other leaderboard criteria
 @leaderboard.command(name='bp', description="Leaderboard: Battles Played")
-async def leaderboard_battles_played(ctx):
-    cursor.execute('SELECT * FROM players ORDER BY battles_played DESC LIMIT 10')
-    rows = cursor.fetchall()
-    embed = discord.Embed(title="**Leaderboard - Battles Played**")
-    for i, row in enumerate(rows, start=1):
-        embed.add_field(name=f"**{i}. {row[1]}**", value=f"**Battles Played:** {row[2]}", inline=False)
-
-    user_rank = get_user_rank_and_details(ctx.author.id, 'battles_played')
-    if user_rank and user_rank[3] > 10:
-        embed.add_field(name=f"Your Rank: {user_rank[3]}", value=f"**{user_rank[1]}** - Battles Played: {user_rank[2]}", inline=False)
-
-    await ctx.send(embed=embed)
-    logger.info(f'{ctx.author.name} viewed the leaderboard for battles played')
+async def leaderboard_battles_played(ctx, scope: str = 'Server'):
+    await generate_leaderboard(ctx, 'battles_played', 'Battles Played', scope)
 
 @leaderboard.command(name='rw', description="Leaderboard: Rounds Won")
-async def leaderboard_rounds_won(ctx):
-    cursor.execute('SELECT * FROM players ORDER BY rounds_won DESC LIMIT 10')
-    rows = cursor.fetchall()
-    embed = discord.Embed(title="**Leaderboard - Rounds Won**")
-    for i, row in enumerate(rows, start=1):
-        embed.add_field(name=f"**{i}. {row[1]}**", value=f"**Rounds Won:** {row[7]}", inline=False)
-
-    user_rank = get_user_rank_and_details(ctx.author.id, 'rounds_won')
-    if user_rank and user_rank[3] > 10:
-        embed.add_field(name=f"Your Rank: {user_rank[3]}", value=f"**{user_rank[1]}** - Rounds Won: {user_rank[2]}", inline=False)
-
-    await ctx.send(embed=embed)
-    logger.info(f'{ctx.author.name} viewed the leaderboard for rounds won')
+async def leaderboard_rounds_won(ctx, scope: str = 'Server'):
+    await generate_leaderboard(ctx, 'rounds_won', 'Rounds Won', scope)
 
 @leaderboard.command(name='rp', description="Leaderboard: Rounds Played")
-async def leaderboard_rounds_played(ctx):
-    cursor.execute('SELECT * FROM players ORDER BY rounds_played DESC LIMIT 10')
-    rows = cursor.fetchall()
-    embed = discord.Embed(title="**Leaderboard - Rounds Played**")
-    for i, row in enumerate(rows, start=1):
-        embed.add_field(name=f"**{i}. {row[1]}**", value=f"**Rounds Played:** {row[6]}", inline=False)
+async def leaderboard_rounds_played(ctx, scope: str = 'Server'):
+    await generate_leaderboard(ctx, 'rounds_played', 'Rounds Played', scope)
 
-    user_rank = get_user_rank_and_details(ctx.author.id, 'rounds_played')
-    if user_rank and user_rank[3] > 10:
-        embed.add_field(name=f"Your Rank: {user_rank[3]}", value=f"**{user_rank[1]}** - Rounds Played: {user_rank[2]}", inline=False)
-
-    await ctx.send(embed=embed)
-    logger.info(f'{ctx.author.name} viewed the leaderboard for rounds played')
+@leaderboard.command(name='coins', description="Leaderboard: Richest Players")
+async def leaderboard_coins(ctx, scope: str = 'Server'):
+    await generate_leaderboard(ctx, 'coins', 'Coins', scope)
 
 
 #---------------------------------------------------------INVENTORY-------------------------------------------------------------------------------------
