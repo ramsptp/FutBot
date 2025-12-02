@@ -3731,9 +3731,9 @@ class CatalogView(discord.ui.View):
 
         card_descriptions = []
         for card, _ in page_items:
-            # --- EXACT INVENTORY UI FORMAT ---
-            # Using 'N/A' for Edition since we don't own these specific cards
-            line = f"**{card.name} (ID: {card.card_id})** -Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
+            # --- MODIFIED CATALOG FORMAT ---
+            # Removed 'Edition', Added 'Type' at the end
+            line = f"**{card.name} (ID: {card.card_id})** - Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}, Type: {card.card_type}"
             card_descriptions.append(line)
 
         description = '\n'.join(card_descriptions) if card_descriptions else "No cards found matching your filters."
