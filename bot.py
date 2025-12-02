@@ -1710,16 +1710,68 @@ async def view_inventory(ctx, user: discord.User = None):
         await ctx.send(f"{target_user.name} has no cards in their inventory.")
         logger.info(f'{ctx.author.name} tried to view {target_user.name}\'s inventory but it was empty')
 
+# --- SORT DROPDOWN ---
+class SortSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Sort by Overall", value="overall", description="Highest to Lowest", emoji="⭐"),
+            discord.SelectOption(label="Sort by Pace", value="speed", description="Highest to Lowest", emoji="⚡"),
+            discord.SelectOption(label="Sort by Attack", value="attack", description="Highest to Lowest", emoji="⚔️"),
+            discord.SelectOption(label="Sort by Defense", value="defense", description="Highest to Lowest", emoji="🛡️"),
+            discord.SelectOption(label="Sort by Rarity", value="rarity", description="Least Copies First", emoji="💎")
+        ]
+        super().__init__(placeholder="Sort Inventory...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        sort_key = self.values[0]
+
+        # Update the label for the title
+        labels = {
+            "overall": "Overall",
+            "speed": "Pace",
+            "attack": "Attack",
+            "defense": "Defense",
+            "rarity": "Rarity"
+        }
+        view.sort_label = labels.get(sort_key, "Overall")
+
+        # Sorting Logic
+        if sort_key == "overall":
+            view.data.sort(key=lambda x: x[0].overall, reverse=True)
+        elif sort_key == "speed":
+            view.data.sort(key=lambda x: x[0].speed, reverse=True)
+        elif sort_key == "attack":
+            view.data.sort(key=lambda x: x[0].attack, reverse=True)
+        elif sort_key == "defense":
+            view.data.sort(key=lambda x: x[0].defense, reverse=True)
+        elif sort_key == "rarity":
+            # Sort by 'copies' in Ascending order (Least copies = Rarest)
+            view.data.sort(key=lambda x: x[0].copies, reverse=False)
+
+        # Reset to page 1 after sorting so user sees top results
+        view.current_page = 0
+        embed = view.update_view()
+        view.update_buttons()
+        
+        await interaction.response.edit_message(embed=embed, view=view)
+
+# --- UPDATED INVENTORY VIEW ---
 class InventoryView(discord.ui.View):
     def __init__(self, inventory, target_user, editions, ctx):
         super().__init__(timeout=120)
-        self.inventory = inventory
-        self.editions = editions
+        # Combine cards and editions into one list of tuples
+        self.data = list(zip(inventory, editions))
         self.target_user = target_user
         self.ctx = ctx
         self.current_page = 0
-        self.total_pages = (len(inventory) - 1) // 10 + 1
+        self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
+        self.sort_label = "Overall" # Default Sort
         self.message = None
+        
+        # Add Sort Dropdown
+        self.add_item(SortSelect())
+        # Add Navigation Buttons
         self.update_buttons()
 
     # --- SECURITY CHECK ---
@@ -1732,25 +1784,32 @@ class InventoryView(discord.ui.View):
     def update_view(self):
         start = self.current_page * 10
         end = start + 10
-        cards = self.inventory[start:end]
-        editions = self.editions[start:end]
+        page_items = self.data[start:end]
 
-        # --- REVERTED TO OLD UI STYLE (Single Line) ---
         card_descriptions = [
             f"**{card.name} (ID: {card.card_id})** - Edition: {edition}, Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
-            for card, edition in zip(cards, editions)
+            for card, edition in page_items
         ]
         description = '\n'.join(card_descriptions) if card_descriptions else "No cards to display."
 
-        embed = discord.Embed(title=f"{self.target_user.name}'s Inventory", description=description)
-        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages}")
-
+        # Update Title (Removed the 🎒 emoji)
+        embed = discord.Embed(
+            title=f"{self.target_user.name}'s Inventory (Sorted by: {self.sort_label})", 
+            description=description, 
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} | Total Cards: {len(self.data)}")
         return embed
 
     def update_buttons(self):
+        # Preserve the Dropdown (index 0) and refresh buttons
+        dropdown = self.children[0]
         self.clear_items()
+        self.add_item(dropdown)
+
         if self.current_page > 0:
             self.add_item(PreviousButton())
+        
         if self.current_page < self.total_pages - 1:
             self.add_item(NextButton())
 
