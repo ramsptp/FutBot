@@ -298,7 +298,7 @@ async def help_command(ctx):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.3.4"
+BOT_VERSION = "1.3.5"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 CHANGELOG = ['''1.0.0 - Initial realease 
@@ -315,7 +315,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.1- Inventory Sort & Filter
 1.3.2- Drop command fixes
 1.3.3- Exchange command added 
-1.3.4- Help Menu Upgrade''']
+1.3.4- Help Menu Upgrade
+1.3.5- More Filters Added''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
