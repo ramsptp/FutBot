@@ -303,7 +303,7 @@ async def help_command(ctx):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.3.5"
+BOT_VERSION = "1.3.9"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 CHANGELOG = ['''1.0.0 - Initial realease 
@@ -324,7 +324,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.5- More Filters Added
 1.3.6- Catalog Command Added
 1.3.7- Beauty Enhancements
-1.3.8- Global & Server Leaderboards''']
+1.3.8- Global & Server Leaderboards
+1.3.9- Lookup Command Added''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -1291,6 +1292,51 @@ async def view(ctx, *, identifier: str):
         await ctx.send(f'No card found with the identifier {identifier}')
         logger.info(f'{ctx.author.name} tried to view card with identifier {identifier} but it was not found')
 
+
+#---------------------------------------------------------LOOKUP-------------------------------------------------------------------------------------
+
+@bot.hybrid_command(name='lookup', aliases=['lu'], description="Inspect a specific card owned by a user")
+async def lookup(ctx, card_id: int, user: discord.User = None):
+    # 1. Determine Target
+    target_user = user or ctx.author
+    ensure_player_exists(target_user.id, target_user.name)
+
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    
+    # 2. Query Database (Added c.copies to the select list)
+    cursor.execute('''
+        SELECT c.name, c.overall, c.attack, c.defense, c.speed, 
+               c.card_rarity, c.card_type, c.image_path, c.copies, i.edition
+        FROM inventories i
+        JOIN cards c ON i.card_id = c.card_id
+        WHERE i.user_id = ? AND i.card_id = ?
+    ''', (target_user.id, card_id))
+    
+    result = cursor.fetchone()
+    conn.close()
+
+    # 3. Check Ownership
+    if not result:
+        return await ctx.send(f"❌ **{target_user.name}** does not own Card ID `{card_id}`.")
+
+    # 4. Unpack Data (Added total_copies)
+    name, overall, atk, def_, spd, rarity, type_, image_path, total_copies, edition = result
+
+    # 5. Build "Slab" Style Embed
+    embed = discord.Embed(title=f"🔍 Card Inspection: {name}", color=discord.Color.gold())
+    
+    embed.set_author(name=f"Property of {target_user.name}", icon_url=target_user.display_avatar.url)
+    
+    # --- UPDATED EDITION FORMAT ---
+    embed.add_field(name="Mint Details", value=f"🆔 **ID:** {card_id}\n#️⃣ **Edition:** #{edition}/{total_copies}", inline=True)
+    embed.add_field(name="Card Info", value=f"💎 {rarity}\n🏆 {type_}", inline=True)
+    
+    embed.add_field(name="Performance", value=f"⭐ **{overall}** | ⚔️ {atk} | 🛡️ {def_} | ⚡ {spd}", inline=False)
+
+    embed.set_image(url=f"attachment://{image_path.split('/')[-1]}")
+    
+    await ctx.send(embed=embed, file=discord.File(image_path))
 
 
 #---------------------------------------------------------DROPS-------------------------------------------------------------------------------------
