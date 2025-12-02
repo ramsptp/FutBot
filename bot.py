@@ -354,7 +354,7 @@ async def battle_logic(ctx):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.2.6"
+BOT_VERSION = "1.3.2"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 CHANGELOG = ['''1.0.0 - Initial realease 
@@ -366,7 +366,10 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.2.3- fdrop updates
 1.2.4- Added Draws
 1.2.5- Added Slash Commands
-1.2.6- Fixed slash command bugs''']
+1.2.6- Fixed slash command bugs
+1.3.0- Inventory Control Fixes
+1.3.1- Inventory Sort & Filter
+1.3.2- Drop command fixes''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -1407,11 +1410,9 @@ async def drop_card(ctx):
     increment_cards_dropped(ctx.author.id)
 
     # 2. Calculate Timestamps
-    # time.time() gives current time in seconds
     current_time = int(time.time())
     unlock_time = current_time + 10
     
-    # <t:TIMESTAMP:R> tells Discord to show a relative countdown (e.g. "in 5 seconds")
     description_text = (
         f"🔒 **Owner Priority:** Ends <t:{unlock_time}:R>\n"
         f"Anyone can claim after the timer ends!"
@@ -1420,9 +1421,17 @@ async def drop_card(ctx):
     content = f'{ctx.author.mention} dropped a card!'
     
     embed = discord.Embed(title="🎁 Card Drop", description=description_text, color=discord.Color.blue())
+    
+    # --- UPDATED FIELDS ---
     embed.add_field(name="Name", value=card.name, inline=True)
     embed.add_field(name="Rarity", value=card.card_rarity, inline=True)
     embed.add_field(name="Type", value=card.card_type, inline=True)
+    
+    # Added ID and Copies here:
+    embed.add_field(name="ID", value=card.card_id, inline=True)
+    embed.add_field(name="Total Copies", value=card.copies, inline=True)
+    # ----------------------
+
     embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
 
     view = discord.ui.View(timeout=120)
