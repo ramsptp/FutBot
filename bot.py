@@ -1091,22 +1091,27 @@ async def handle_single_drop(channel, card):
         embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
         embed.set_footer(text="Hurry! This drop expires in 2 minutes.")
 
-        view = discord.ui.View(timeout=120)
-        view.add_item(CollectButton(card))
+        # Use our custom view that tracks the collected state
+        view = DropView(timeout=120)
+        view.add_item(TimedCollectButton(card, None)) # Passing None as owner_id since auto-drops have no owner priority
 
         msg = await channel.send(embed=embed, view=view, file=discord.File(card.image_path))
         
+        # Wait until button clicked OR timeout
         await view.wait()
         
-        if not view.is_finished(): 
-            disabled_view = discord.ui.View()
-            btn = discord.ui.Button(label="Expired", style=discord.ButtonStyle.grey, disabled=True)
-            disabled_view.add_item(btn)
+        # If the view stopped and it was NOT collected, it must have timed out
+        if not view.collected:
+            # Create expired embed
+            expired_embed = discord.Embed(
+                title="❌ Drop Expired", 
+                description=f"No one collected **{card.name}** in time.", 
+                color=discord.Color.red()
+            )
+            expired_embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
             
-            embed.title = "❌ Drop Expired"
-            embed.description = "No one collected this card in time."
-            embed.color = discord.Color.red()
-            await msg.edit(embed=embed, view=disabled_view)
+            # Remove the button by setting view=None
+            await msg.edit(embed=expired_embed, view=None)
             
     except Exception as e:
         logger.error(f"Error dropping in channel {channel.id}: {e}")
@@ -1385,11 +1390,22 @@ async def drop_card(ctx):
 
     embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
 
-    view = discord.ui.View(timeout=120)
+    view = DropView(timeout=120)
     view.add_item(TimedCollectButton(card, ctx.author.id))
 
+    # ... inside drop_card command ...
     try:
-        await ctx.send(content=content, embed=embed, view=view, file=discord.File(card.image_path))
+        msg = await ctx.send(content=content, embed=embed, view=view, file=discord.File(card.image_path))
+        
+        # Wait for result
+        await view.wait()
+        
+        if not view.collected:
+            embed.title = "❌ Drop Expired"
+            embed.description = "No one collected this card in time."
+            embed.color = discord.Color.red()
+            await msg.edit(embed=embed, view=None)
+            
     except Exception as e:
         logger.error(f"Failed to send card drop message: {e}")
 
@@ -1402,6 +1418,11 @@ async def drop_card_error(ctx, error):
         logger.info(f"User {ctx.author.name} tried to drop a card but is on cooldown: {minutes} minutes and {seconds} seconds remaining.")
 
 
+class DropView(discord.ui.View):
+    def __init__(self, timeout=120):
+        super().__init__(timeout=timeout)
+        self.collected = False
+
 class TimedCollectButton(discord.ui.Button):
     def __init__(self, card, owner_id):
         super().__init__(style=discord.ButtonStyle.green, label="Collect", custom_id="timed_collect_card")
@@ -1413,10 +1434,11 @@ class TimedCollectButton(discord.ui.Button):
         # 1. Check Time Lock
         time_elapsed = time.time() - self.drop_time
         
-        # If NOT owner AND < 10 seconds have passed
-        if interaction.user.id != self.owner_id and time_elapsed < 10:
+        # FIX: Added "self.owner_id is not None" check
+        # This ensures the lock ONLY applies if there is a specific owner (Manual Drop).
+        # For Auto-Drops (where owner_id is None), this check is skipped.
+        if self.owner_id is not None and interaction.user.id != self.owner_id and time_elapsed < 10:
             remaining = 10 - int(time_elapsed)
-            # Ephemeral message (only clicker sees it)
             await interaction.response.send_message(f"✋ **Locked!** Priority to owner for {remaining} more seconds.", ephemeral=True)
             return
 
@@ -1435,12 +1457,15 @@ class TimedCollectButton(discord.ui.Button):
         )
         embed.set_image(url=f"attachment://{self.card.image_path.split('/')[-1]}")
         
-        # Stats & Details
         embed.add_field(name="Stats", value=f"⭐ {self.card.overall} | ⚔️ {self.card.attack} | 🛡️ {self.card.defense} | ⚡ {self.card.speed}", inline=False)
-        embed.add_field(name="Card Details", value=f" ID: {self.card.card_id} |  Rarity: {self.card.card_rarity} |  Total Copies: {self.card.copies + 1}", inline=False)
+        embed.add_field(name="Card Details", value=f"ID: {self.card.card_id} | Rarity: {self.card.card_rarity} | Total Copies: {self.card.copies + 1}", inline=False)
         embed.set_footer(text=f"Winner: {interaction.user.name}", icon_url=interaction.user.display_avatar.url)
 
-        # 4. Cleanup
+        # --- UPDATE STATUS ---
+        if hasattr(self.view, 'collected'):
+            self.view.collected = True
+
+        # 4. Remove Button
         await interaction.response.edit_message(embed=embed, view=None)
         self.view.stop()
 
