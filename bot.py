@@ -2151,6 +2151,309 @@ from discord.ui import Select, View, Button
 
 
 
+
+
+# ---------------------------------------------------------ADVANCED EXCHANGE SYSTEM-------------------------------------------------------------------------------------
+
+class ExchangeSession:
+    """Holds state for the advanced /exchange command"""
+    def __init__(self, p1, p2):
+        self.p1 = p1
+        self.p2 = p2
+        # Offers: {'cards': [card_objects], 'coins': 0}
+        self.p1_offer = {'cards': [], 'coins': 0}
+        self.p2_offer = {'cards': [], 'coins': 0}
+        
+        self.p1_locked = False
+        self.p2_locked = False
+        self.p1_confirmed = False
+        self.p2_confirmed = False
+
+class ExchangeAddCoinsModal(discord.ui.Modal, title="Add Coins to Exchange"):
+    amount = discord.ui.TextInput(label="Amount", placeholder="e.g. 500", min_length=1, max_length=10)
+
+    def __init__(self, view, user_side):
+        super().__init__()
+        self.exchange_view = view
+        self.user_side = user_side # 'p1' or 'p2'
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            amount = int(self.amount.value)
+            if amount <= 0: raise ValueError
+        except ValueError:
+            return await interaction.response.send_message("Please enter a valid positive number.", ephemeral=True)
+
+        user_id = interaction.user.id
+        
+        # Verify Balance
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT coins FROM players WHERE user_id = ?', (user_id,))
+        balance = cursor.fetchone()[0]
+        conn.close()
+
+        if balance < amount:
+            return await interaction.response.send_message(f"You only have {balance} coins.", ephemeral=True)
+
+        # Update Offer
+        if self.user_side == 'p1':
+            self.exchange_view.session.p1_offer['coins'] = amount
+        else:
+            self.exchange_view.session.p2_offer['coins'] = amount
+            
+        # Unlock logic on change
+        self.exchange_view.session.p1_locked = False
+        self.exchange_view.session.p2_locked = False
+        self.exchange_view.session.p1_confirmed = False
+        self.exchange_view.session.p2_confirmed = False
+        
+        await self.exchange_view.update_display(interaction)
+
+class ExchangeAddCardModal(discord.ui.Modal, title="Add Card to Exchange"):
+    card_id_input = discord.ui.TextInput(label="Card ID", placeholder="Enter Card ID", min_length=1, max_length=10)
+
+    def __init__(self, view, user_side):
+        super().__init__()
+        self.exchange_view = view
+        self.user_side = user_side
+
+    async def on_submit(self, interaction: discord.Interaction):
+        identifier = self.card_id_input.value
+        if not identifier.isdigit():
+            return await interaction.response.send_message("Invalid ID.", ephemeral=True)
+        
+        card_id = int(identifier)
+        
+        # 1. Check if YOU own it
+        if not check_card_ownership(interaction.user.id, card_id):
+            return await interaction.response.send_message("You do not own this card.", ephemeral=True)
+
+        # 2. Check if OPPONENT owns it (The Fix)
+        # Determine who the receiver is based on who is clicking
+        if self.user_side == 'p1':
+            receiver = self.exchange_view.session.p2
+        else:
+            receiver = self.exchange_view.session.p1
+            
+        if check_card_ownership(receiver.id, card_id):
+            return await interaction.response.send_message(f"⛔ **{receiver.name}** already owns this card! No duplicates allowed.", ephemeral=True)
+
+        card = get_card_by_id(card_id)
+        if not card:
+            return await interaction.response.send_message("Card not found.", ephemeral=True)
+
+        current_offer = self.exchange_view.session.p1_offer['cards'] if self.user_side == 'p1' else self.exchange_view.session.p2_offer['cards']
+        
+        if any(c.card_id == card_id for c in current_offer):
+            return await interaction.response.send_message("Card already in offer.", ephemeral=True)
+
+        current_offer.append(card)
+        
+        # Unlock logic on change
+        self.exchange_view.session.p1_locked = False
+        self.exchange_view.session.p2_locked = False
+        self.exchange_view.session.p1_confirmed = False
+        self.exchange_view.session.p2_confirmed = False
+        
+        await self.exchange_view.update_display(interaction)
+
+class ExchangeView(discord.ui.View):
+    def __init__(self, ctx, p1, p2):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.session = ExchangeSession(p1, p2)
+        self.message = None
+        
+        # --- FIX: Add buttons immediately ---
+        self.add_item(ExAddCardButton())
+        self.add_item(ExAddCoinsButton())
+        self.add_item(ExClearButton())
+        self.add_item(ExLockButton())
+        self.add_item(ExCancelButton())
+
+    async def update_display(self, interaction):
+        p1_status = "🔒 Locked" if self.session.p1_locked else "✏️ Editing..."
+        p2_status = "🔒 Locked" if self.session.p2_locked else "✏️ Editing..."
+        
+        color = discord.Color.gold()
+        if self.session.p1_locked and self.session.p2_locked:
+            color = discord.Color.green()
+
+        embed = discord.Embed(title="⚖️ Exchange Table", color=color)
+        
+        p1_cards = "\n".join([f"• {c.name} (ID: {c.card_id})" for c in self.session.p1_offer['cards']]) or "No cards"
+        p1_coins = self.session.p1_offer['coins']
+        embed.add_field(name=f"{self.session.p1.name} ({p1_status})", value=f"💰 {p1_coins}\n{p1_cards}", inline=True)
+
+        p2_cards = "\n".join([f"• {c.name} (ID: {c.card_id})" for c in self.session.p2_offer['cards']]) or "No cards"
+        p2_coins = self.session.p2_offer['coins']
+        embed.add_field(name=f"{self.session.p2.name} ({p2_status})", value=f"💰 {p2_coins}\n{p2_cards}", inline=True)
+
+        if self.session.p1_locked and self.session.p2_locked:
+            embed.description = "**BOTH LOCKED!** Click **Confirm** to execute."
+        else:
+            embed.description = "Add items using the buttons below. Lock when ready."
+
+        self.clear_items()
+        if not (self.session.p1_locked and self.session.p2_locked):
+            self.add_item(ExAddCardButton())
+            self.add_item(ExAddCoinsButton())
+            self.add_item(ExClearButton())
+            self.add_item(ExLockButton())
+            self.add_item(ExCancelButton())
+        else:
+            self.add_item(ExConfirmButton())
+            self.add_item(ExCancelButton())
+
+        if interaction.response.is_done():
+            await self.message.edit(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    async def execute_exchange(self, interaction):
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        
+        try:
+            # 1. FINAL ASSET VERIFICATION
+            
+            # Check P1 Coins
+            cursor.execute('SELECT coins FROM players WHERE user_id = ?', (self.session.p1.id,))
+            if cursor.fetchone()[0] < self.session.p1_offer['coins']: raise ValueError(f"{self.session.p1.name} missing coins.")
+            
+            # Check P2 Coins
+            cursor.execute('SELECT coins FROM players WHERE user_id = ?', (self.session.p2.id,))
+            if cursor.fetchone()[0] < self.session.p2_offer['coins']: raise ValueError(f"{self.session.p2.name} missing coins.")
+
+            # Check P1 Cards Ownership & P2 Duplicate Check
+            for card in self.session.p1_offer['cards']:
+                # P1 still has it?
+                cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p1.id, card.card_id))
+                if not cursor.fetchone(): raise ValueError(f"{self.session.p1.name} no longer owns {card.name}")
+                
+                # P2 already has it?
+                cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p2.id, card.card_id))
+                if cursor.fetchone(): raise ValueError(f"{self.session.p2.name} already owns {card.name}")
+
+            # Check P2 Cards Ownership & P1 Duplicate Check
+            for card in self.session.p2_offer['cards']:
+                # P2 still has it?
+                cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p2.id, card.card_id))
+                if not cursor.fetchone(): raise ValueError(f"{self.session.p2.name} no longer owns {card.name}")
+                
+                # P1 already has it?
+                cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p1.id, card.card_id))
+                if cursor.fetchone(): raise ValueError(f"{self.session.p1.name} already owns {card.name}")
+
+            # 2. EXECUTE SWAPS
+            
+            # Transfer Coins
+            if self.session.p1_offer['coins'] > 0:
+                cursor.execute('UPDATE players SET coins = coins - ? WHERE user_id = ?', (self.session.p1_offer['coins'], self.session.p1.id))
+                cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (self.session.p1_offer['coins'], self.session.p2.id))
+            
+            if self.session.p2_offer['coins'] > 0:
+                cursor.execute('UPDATE players SET coins = coins - ? WHERE user_id = ?', (self.session.p2_offer['coins'], self.session.p2.id))
+                cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (self.session.p2_offer['coins'], self.session.p1.id))
+
+            # Transfer Cards
+            for card in self.session.p1_offer['cards']:
+                cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE card_id = ?', (self.session.p2.id, card.card_id))
+            
+            for card in self.session.p2_offer['cards']:
+                cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE card_id = ?', (self.session.p1.id, card.card_id))
+
+            conn.commit()
+            
+            embed = discord.Embed(title="✅ Exchange Complete!", description="Items transferred successfully.", color=discord.Color.green())
+            await interaction.response.edit_message(embed=embed, view=None)
+            self.stop()
+
+        except Exception as e:
+            conn.rollback()
+            await interaction.response.send_message(f"❌ Failed: {str(e)}", ephemeral=True)
+        finally:
+            conn.close()
+
+# --- EXCHANGE BUTTONS ---
+
+class ExAddCardButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="Add Card", style=discord.ButtonStyle.primary, emoji="🃏", row=0)
+    async def callback(self, interaction):
+        view = self.view
+        side = 'p1' if interaction.user.id == view.session.p1.id else 'p2' if interaction.user.id == view.session.p2.id else None
+        if side: await interaction.response.send_modal(ExchangeAddCardModal(view, side))
+        else: await interaction.response.send_message("Not your session.", ephemeral=True)
+
+class ExAddCoinsButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="Set Coins", style=discord.ButtonStyle.primary, emoji="💰", row=0)
+    async def callback(self, interaction):
+        view = self.view
+        side = 'p1' if interaction.user.id == view.session.p1.id else 'p2' if interaction.user.id == view.session.p2.id else None
+        if side: await interaction.response.send_modal(ExchangeAddCoinsModal(view, side))
+        else: await interaction.response.send_message("Not your session.", ephemeral=True)
+
+class ExClearButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="Clear", style=discord.ButtonStyle.secondary, emoji="🧹", row=0)
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id == view.session.p1.id:
+            view.session.p1_offer = {'cards': [], 'coins': 0}
+            view.session.p1_locked = False
+            view.session.p2_locked = False
+        elif interaction.user.id == view.session.p2.id:
+            view.session.p2_offer = {'cards': [], 'coins': 0}
+            view.session.p1_locked = False
+            view.session.p2_locked = False
+        else: return await interaction.response.send_message("Not your session.", ephemeral=True)
+        await view.update_display(interaction)
+
+class ExLockButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="Lock Offer", style=discord.ButtonStyle.success, emoji="🔒", row=1)
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id == view.session.p1.id: view.session.p1_locked = not view.session.p1_locked
+        elif interaction.user.id == view.session.p2.id: view.session.p2_locked = not view.session.p2_locked
+        else: return await interaction.response.send_message("Not your session.", ephemeral=True)
+        await view.update_display(interaction)
+
+class ExConfirmButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="Confirm Exchange", style=discord.ButtonStyle.green, emoji="🤝", row=1)
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id == view.session.p1.id: view.session.p1_confirmed = True
+        elif interaction.user.id == view.session.p2.id: view.session.p2_confirmed = True
+        
+        if view.session.p1_confirmed and view.session.p2_confirmed: await view.execute_exchange(interaction)
+        else: await interaction.response.send_message(f"{interaction.user.name} confirmed. Waiting for partner...", ephemeral=False)
+
+class ExCancelButton(discord.ui.Button):
+    def __init__(self): super().__init__(label="Cancel", style=discord.ButtonStyle.danger, emoji="✖️", row=1)
+    async def callback(self, interaction):
+        if interaction.user.id in [self.view.session.p1.id, self.view.session.p2.id]:
+            await interaction.response.edit_message(content="🚫 Exchange Cancelled.", embed=None, view=None)
+            self.view.stop()
+
+@bot.hybrid_command(name='exchange', description="Start a complex trading session (Cards + Coins)")
+async def exchange(ctx, user: discord.User):
+    if user.id == ctx.author.id: return await ctx.send("You cannot exchange with yourself.")
+    if user.bot: return await ctx.send("Bots cannot trade.")
+
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    ensure_player_exists(user.id, user.name)
+
+    view = ExchangeView(ctx, ctx.author, user)
+    embed = discord.Embed(title="⚖️ Exchange Request", description=f"{ctx.author.mention} wants to negotiate an exchange with {user.mention}!", color=discord.Color.blue())
+    embed.add_field(name="Instructions", value="Use the buttons to add Cards or Coins. Lock when ready.")
+    
+    # Send the view immediately so buttons appear
+    msg = await ctx.send(content=f"{user.mention}", embed=embed, view=view)
+    view.message = msg
+
+
+
+    
 # ---------------------------------------------------------BATTLES REFACTORED-------------------------------------------------------------------------------------
 
 class Battle:
