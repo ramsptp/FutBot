@@ -320,7 +320,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.3- Exchange command added 
 1.3.4- Help Menu Upgrade
 1.3.5- More Filters Added
-1.3.6- Catalog Command Added''']
+1.3.6- Catalog Command Added
+1.3.7- Beauty Enhancements''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -1292,6 +1293,13 @@ async def view(ctx, *, identifier: str):
 #---------------------------------------------------------DROPS-------------------------------------------------------------------------------------
 
 
+class DailyView(discord.ui.View):
+    def __init__(self, timeout=120):
+        super().__init__(timeout=timeout)
+        self.collected = False
+
+
+
 @bot.hybrid_command(name='daily', description="Claim your daily reward card")
 @commands.cooldown(1, 64800, commands.BucketType.user)  # 18 hours cooldown per user
 async def daily(ctx):
@@ -1300,19 +1308,19 @@ async def daily(ctx):
     
     # Generate two cards
     cards = [weighted_choice(cards_with_weights) for _ in range(2)]
+    # Temporarily increment copies for display (since we are generating them now)
     for card in cards:
         card.copies += 1
 
-    if increment_cards_dropped(ctx.author.id):  # Increment cards_dropped
+    if increment_cards_dropped(ctx.author.id):
         logger.info(f"User {ctx.author.name}'s cards_dropped incremented successfully.")
     else:
         logger.error(f"Failed to increment cards_dropped for user {ctx.author.name}.")
 
-    logger.info(f"Generated cards for {ctx.author.name}: {[card.name for card in cards]}")
+    content = f'{ctx.author.mention}, you have a daily reward card to collect. Please choose one of the following cards (Expires in 2 mins):'
 
-    content = f'{ctx.author.mention}, you have a daily reward card to collect. Please choose one of the following cards:'
-
-    view = discord.ui.View(timeout=120)
+    # Use Daily View
+    view = DailyView(timeout=120)
     for card in cards:
         view.add_item(CollectCardButton(card, ctx.author.id))
 
@@ -1323,23 +1331,30 @@ async def daily(ctx):
             f"**ID:** {card.card_id}\n"
             f"**Rarity:** {card.card_rarity}\n"
             f"**Type:** {card.card_type}\n"
-            f"**Attack:** {card.attack}\n"
-            f"**Defense:** {card.defense}\n"
-            f"**Speed:** {card.speed}\n"
             f"**Overall:** {card.overall}\n"
-            f"**League:** {card.league}\n"
-            f"**Nation:** {card.nation}\n"
-            f"**Copies:** {card.copies}\n"
+            f"**Total Copies:** {card.copies}\n"  # <-- Added this line
         ), inline=True)
     
-    # Discord only supports one image per embed
     files = [discord.File(card.image_path) for card in cards]
     
     try:
-        await ctx.send(content=content, embed=embed, view=view, files=files)
-        logger.info(f"Sent daily reward message to {ctx.author.name}")
+        msg = await ctx.send(content=content, embed=embed, view=view, files=files)
+        
+        await view.wait()
+        
+        if not view.collected:
+            expired_embed = discord.Embed(
+                title="❌ Daily Reward Expired",
+                description="You didn't pick a card in time! The options have vanished.",
+                color=discord.Color.red()
+            )
+            await msg.edit(content=None, embed=expired_embed, view=None)
+            logger.info(f"Daily reward for {ctx.author.name} expired.")
+            
     except Exception as e:
         logger.error(f"Failed to send daily reward message to {ctx.author.name}: {e}")
+
+
 
 @daily.error
 async def daily_error(ctx, error):
@@ -1378,34 +1393,45 @@ async def drop_card(ctx):
     
     embed = discord.Embed(title="🎁 Card Drop", description=description_text, color=discord.Color.blue())
     
-    # --- UPDATED FIELDS ---
     embed.add_field(name="Name", value=card.name, inline=True)
     embed.add_field(name="Rarity", value=card.card_rarity, inline=True)
     embed.add_field(name="Type", value=card.card_type, inline=True)
-    
-    # Added ID and Copies here:
     embed.add_field(name="ID", value=card.card_id, inline=True)
     embed.add_field(name="Total Copies", value=card.copies, inline=True)
-    # ----------------------
 
     embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
 
+    # Use DropView (which has the .collected flag we added earlier)
     view = DropView(timeout=120)
     view.add_item(TimedCollectButton(card, ctx.author.id))
 
-    # ... inside drop_card command ...
     try:
         msg = await ctx.send(content=content, embed=embed, view=view, file=discord.File(card.image_path))
         
-        # Wait for result
+        # --- PHASE 1: Priority Timer (10 Seconds) ---
+        await asyncio.sleep(10)
+        
+        # If it was collected during these 10 seconds, stop here.
+        if view.is_finished():
+            return
+
+        # Update text to show it's free for everyone
+        embed.description = "🔓 **Owner Priority Ended**\nAnyone can claim now!"
+        embed.color = discord.Color.green()
+        await msg.edit(embed=embed)
+
+        # --- PHASE 2: Expiration Timer (Remaining Time) ---
+        # Now we wait for the view to finish naturally (timeout or click)
         await view.wait()
         
-        if not view.collected:
+        # Check if it timed out (was NOT collected)
+        if not hasattr(view, 'collected') or not view.collected:
             embed.title = "❌ Drop Expired"
             embed.description = "No one collected this card in time."
             embed.color = discord.Color.red()
+            # Remove the button
             await msg.edit(embed=embed, view=None)
-            
+
     except Exception as e:
         logger.error(f"Failed to send card drop message: {e}")
 
@@ -1573,7 +1599,7 @@ async def set_title(ctx):
 import discord
 from discord.ui import Button
 
-class CollectCardButton(Button):
+class CollectCardButton(discord.ui.Button):
     def __init__(self, card, user_id):
         super().__init__(label=f"Collect {card.name}", style=discord.ButtonStyle.green)
         self.card = card
@@ -1588,14 +1614,27 @@ class CollectCardButton(Button):
             add_card_to_inventory(self.user_id, self.card.card_id)
             await interaction.response.send_message(f'{interaction.user.name} collected {self.card.name}!', ephemeral=True)
 
-            # Update the embed to reflect the collected card
+            # Update embed to success state
             embed = interaction.message.embeds[0]
-            embed.title = "Card Collected!"
-            embed.description = f"{interaction.user.mention} has collected {self.card.name}!"
+            embed.title = "✅ Daily Reward Collected!"
+            embed.description = f"{interaction.user.mention} has collected **{self.card.name}**!"
             embed.color = discord.Color.green()
             embed.set_image(url=f"attachment://{self.card.image_path.split('/')[-1]}")
+            
+            embed.clear_fields()
+            # Added "Total Copies" here as well
+            embed.add_field(
+                name="Card Details", 
+                value=f"ID: {self.card.card_id} | Rarity: {self.card.card_rarity} | Overall: {self.card.overall} | Total Copies: {self.card.copies}", 
+                inline=False
+            )
 
+            if hasattr(self.view, 'collected'):
+                self.view.collected = True
+            
+            self.view.stop()
             await interaction.message.edit(content=None, embed=embed, view=None)
+            
             logger.info(f"{interaction.user.name} collected card {self.card.name} (ID: {self.card.card_id})")
         except ValueError as e:
             await interaction.response.send_message(str(e), ephemeral=True)
