@@ -1753,30 +1753,47 @@ class FilterModal(discord.ui.Modal, title="Filter Inventory"):
 
 
 
+
+# --- 2. ALL BUTTONS (Row 1) ---
+
+class PreviousButton(discord.ui.Button):
+    def __init__(self):
+        # ROW 1, Text Label
+        super().__init__(label='Previous', style=discord.ButtonStyle.primary, custom_id='previous', row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if view.current_page > 0:
+            view.current_page -= 1
+            embed = view.update_view()
+            view.update_buttons()
+            await interaction.response.edit_message(embed=embed, view=view)
+
 class FilterButton(discord.ui.Button):
     def __init__(self):
-        # ROW 3 (Fixed from Row 1)
-        super().__init__(label="Filter Name/Rating", style=discord.ButtonStyle.secondary, emoji="🔍", row=3)
+        # ROW 1
+        super().__init__(label="Filter", style=discord.ButtonStyle.secondary, emoji="🔍", row=1)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(FilterModal(self.view))
 
 class ResetFilterButton(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="Reset", style=discord.ButtonStyle.danger, emoji="✖️", row=2)
+        # ROW 1
+        super().__init__(label="Reset", style=discord.ButtonStyle.danger, emoji="✖️", row=1)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         view.data = view.full_data[:]
         
-        # Reset all filters
+        # Reset filters
         view.filter_name = None
         view.filter_rating = None
         view.filter_rarity = None
         view.filter_type = None
         view.current_page = 0
         
-        # Reset Sort to default
+        # Reset Sort
         view.children[0].options[0].default = True 
         view.data.sort(key=lambda x: x[0].overall, reverse=True)
         view.sort_label = "Overall"
@@ -1784,6 +1801,21 @@ class ResetFilterButton(discord.ui.Button):
         embed = view.update_view()
         view.update_buttons()
         await interaction.response.edit_message(embed=embed, view=view)
+
+class NextButton(discord.ui.Button):
+    def __init__(self):
+        # ROW 1, Text Label
+        super().__init__(label='Next', style=discord.ButtonStyle.primary, custom_id='next', row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if view.current_page < view.total_pages - 1:
+            view.current_page += 1
+            embed = view.update_view()
+            view.update_buttons()
+            await interaction.response.edit_message(embed=embed, view=view)
+
+# --- 3. MAIN VIEW ---
 
 class InventoryView(discord.ui.View):
     def __init__(self, inventory, target_user, editions, ctx):
@@ -1804,8 +1836,8 @@ class InventoryView(discord.ui.View):
         self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
         self.data.sort(key=lambda x: x[0].overall, reverse=True)
         
-        # Only add Sort Dropdown (Row 0)
-        self.add_item(SortSelect())
+        # Initialize UI
+        self.add_item(SortSelect()) # Row 0
         self.update_buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -1817,19 +1849,12 @@ class InventoryView(discord.ui.View):
     def apply_filters(self):
         filtered = self.full_data[:]
 
-        # 1. Name Filter
         if self.filter_name:
             filtered = [x for x in filtered if self.filter_name in x[0].name.lower()]
-
-        # 2. Rating Filter
         if self.filter_rating:
             filtered = [x for x in filtered if x[0].overall >= self.filter_rating]
-
-        # 3. Rarity Filter (Text Search)
         if self.filter_rarity:
             filtered = [x for x in filtered if self.filter_rarity in x[0].card_rarity.lower()]
-
-        # 4. Type Filter (Text Search)
         if self.filter_type:
             filtered = [x for x in filtered if self.filter_type in x[0].card_type.lower()]
 
@@ -1842,13 +1867,14 @@ class InventoryView(discord.ui.View):
         end = start + 10
         page_items = self.data[start:end]
 
-        card_descriptions = [
-            f"**{card.name} (ID: {card.card_id})** - Edition: {edition}, Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
-            for card, edition in page_items
-        ]
+        card_descriptions = []
+        for card, edition in page_items:
+            # --- RESTORED ORIGINAL LONG FORMAT ---
+            line = f"**{card.name} (ID: {card.card_id})** - Edition: {edition}, Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
+            card_descriptions.append(line)
+
         description = '\n'.join(card_descriptions) if card_descriptions else "No cards found matching your filters."
 
-        # Build Title Status
         status = [f"Sort: {self.sort_label}"]
         if self.filter_name: status.append(f"Name: {self.filter_name}")
         if self.filter_rating: status.append(f"OVR>={self.filter_rating}")
@@ -1864,52 +1890,24 @@ class InventoryView(discord.ui.View):
         return embed
 
     def update_buttons(self):
-        # Reset buttons (Keep dropdown at index 0)
+        # Clear buttons (keep dropdown at index 0)
         while len(self.children) > 1:
             self.remove_item(self.children[1])
 
-        # Row 1: Filter Button
+        # Add all buttons to Row 1 in logical order:
+        # [Previous] [Filter] [Reset?] [Next]
+        
+        if self.current_page > 0:
+            self.add_item(PreviousButton())
+
         self.add_item(FilterButton())
         
-        # Row 2: Reset (only if filtered)
         is_filtered = (len(self.data) != len(self.full_data))
         if is_filtered:
             self.add_item(ResetFilterButton())
 
-        # Row 2: Navigation
-        if self.current_page > 0:
-            self.add_item(PreviousButton())
-        
         if self.current_page < self.total_pages - 1:
             self.add_item(NextButton())
-
-# --- 3. NAVIGATION BUTTONS (Row 4) ---
-
-class PreviousButton(discord.ui.Button):
-    def __init__(self):
-        # ROW 4
-        super().__init__(label='Previous', style=discord.ButtonStyle.primary, custom_id='previous', row=4)
-
-    async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if view.current_page > 0:
-            view.current_page -= 1
-            embed = view.update_view()
-            view.update_buttons()
-            await interaction.response.edit_message(embed=embed, view=view)
-
-class NextButton(discord.ui.Button):
-    def __init__(self):
-        # ROW 4
-        super().__init__(label='Next', style=discord.ButtonStyle.primary, custom_id='next', row=4)
-
-    async def callback(self, interaction: discord.Interaction):
-        view = self.view
-        if view.current_page < view.total_pages - 1:
-            view.current_page += 1
-            embed = view.update_view()
-            view.update_buttons()
-            await interaction.response.edit_message(embed=embed, view=view)
 
 
 
