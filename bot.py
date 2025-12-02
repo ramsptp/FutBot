@@ -316,7 +316,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.2- Drop command fixes
 1.3.3- Exchange command added 
 1.3.4- Help Menu Upgrade
-1.3.5- More Filters Added''']
+1.3.5- More Filters Added
+1.3.6- Catalog Command Added''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -1706,39 +1707,17 @@ class SortSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=embed, view=view)
 
 class FilterModal(discord.ui.Modal, title="Filter Inventory"):
-    name_input = discord.ui.TextInput(
-        label="Player Name", 
-        placeholder="e.g. Messi", 
-        required=False
-    )
-    
-    min_rating_input = discord.ui.TextInput(
-        label="Min Rating", 
-        placeholder="e.g. 85", 
-        required=False, 
-        max_length=2
-    )
-
-    # New Input for Rarity
-    rarity_input = discord.ui.TextInput(
-        label="Rarity", 
-        placeholder="e.g. Rare, Common", 
-        required=False
-    )
-
-    # New Input for Type
-    type_input = discord.ui.TextInput(
-        label="Card Type", 
-        placeholder="e.g. Icon, Hero", 
-        required=False
-    )
+    name_input = discord.ui.TextInput(label="Player Name", placeholder="e.g. Messi", required=False)
+    min_rating_input = discord.ui.TextInput(label="Min Rating", placeholder="e.g. 85", required=False, max_length=2)
+    rarity_input = discord.ui.TextInput(label="Rarity", placeholder="e.g. Rare, Common", required=False)
+    type_input = discord.ui.TextInput(label="Card Type", placeholder="e.g. Icon, Hero", required=False)
 
     def __init__(self, view):
         super().__init__()
         self.inv_view = view
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Save inputs to the View (store as lowercase for easier matching)
+        # Save inputs
         self.inv_view.filter_name = self.name_input.value.lower() if self.name_input.value else None
         self.inv_view.filter_rating = int(self.min_rating_input.value) if self.min_rating_input.value.isdigit() else None
         self.inv_view.filter_rarity = self.rarity_input.value.lower() if self.rarity_input.value else None
@@ -1746,6 +1725,15 @@ class FilterModal(discord.ui.Modal, title="Filter Inventory"):
         
         # Apply filters
         self.inv_view.apply_filters()
+        
+        # --- FIX: Force Reset Sort to Overall ---
+        self.inv_view.data.sort(key=lambda x: x[0].overall, reverse=True)
+        self.inv_view.sort_label = "Overall"
+        
+        # Reset Dropdown Visuals to show "Overall" is selected
+        dropdown = self.inv_view.children[0]
+        for opt in dropdown.options:
+            opt.default = (opt.value == "overall")
         
         embed = self.inv_view.update_view()
         self.inv_view.update_buttons()
@@ -3683,6 +3671,132 @@ def add_loser_coins(user_id):
     cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (user_id,))
     conn.commit()
 
+
+#-----------------------------------CATALOG VIEWER----------------------------------
+
+class CatalogView(discord.ui.View):
+    def __init__(self, cards, ctx):
+        super().__init__(timeout=120)
+        # Zip with None since we don't have specific edition numbers for a catalog
+        self.full_data = [(card, None) for card in cards]
+        self.data = self.full_data[:] 
+        self.ctx = ctx
+        self.current_page = 0
+        
+        # Filters
+        self.sort_label = "Overall"
+        self.filter_name = None
+        self.filter_rating = None
+        self.filter_rarity = None
+        self.filter_type = None
+        
+        self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
+        
+        # Initial Sort: Overall
+        self.data.sort(key=lambda x: x[0].overall, reverse=True)
+        
+        # Add UI Elements (Row 0 Dropdown)
+        self.add_item(SortSelect()) 
+        self.update_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("⛔ You cannot control this menu. Run `/catalog` yourself!", ephemeral=True)
+            return False
+        return True
+
+    def apply_filters(self):
+        filtered = self.full_data[:]
+
+        if self.filter_name:
+            filtered = [x for x in filtered if self.filter_name in x[0].name.lower()]
+        if self.filter_rating:
+            filtered = [x for x in filtered if x[0].overall >= self.filter_rating]
+        if self.filter_rarity:
+            filtered = [x for x in filtered if self.filter_rarity in x[0].card_rarity.lower()]
+        if self.filter_type:
+            filtered = [x for x in filtered if self.filter_type in x[0].card_type.lower()]
+
+        self.data = filtered
+        self.current_page = 0 
+        self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
+
+    def update_view(self):
+        start = self.current_page * 10
+        end = start + 10
+        page_items = self.data[start:end]
+
+        card_descriptions = []
+        for card, _ in page_items:
+            # --- EXACT INVENTORY UI FORMAT ---
+            # Using 'N/A' for Edition since we don't own these specific cards
+            line = f"**{card.name} (ID: {card.card_id})** - Edition: N/A, Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
+            card_descriptions.append(line)
+
+        description = '\n'.join(card_descriptions) if card_descriptions else "No cards found matching your filters."
+
+        # Build Status Title
+        status = [f"Sort: {self.sort_label}"]
+        if self.filter_name: status.append(f"Name: {self.filter_name}")
+        if self.filter_rating: status.append(f"OVR>={self.filter_rating}")
+        if self.filter_rarity: status.append(f"Rarity: {self.filter_rarity}")
+        if self.filter_type: status.append(f"Type: {self.filter_type}")
+        
+        embed = discord.Embed(
+            title=f"📖 Card Catalog ({' | '.join(status)})", 
+            description=description, 
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} | Showing {len(self.data)} of {len(self.full_data)} Cards")
+        return embed
+
+    def update_buttons(self):
+        # Clear buttons (keep dropdown at index 0)
+        while len(self.children) > 1:
+            self.remove_item(self.children[1])
+
+        # Row 1: Filter & Reset
+        self.add_item(FilterButton())
+        
+        is_filtered = (len(self.data) != len(self.full_data))
+        if is_filtered:
+            self.add_item(ResetFilterButton())
+
+        # Row 2: Navigation
+        if self.current_page > 0:
+            self.add_item(PreviousButton())
+        
+        if self.current_page < self.total_pages - 1:
+            self.add_item(NextButton())
+
+
+@bot.hybrid_command(name='catalog', description="View every card available in the game")
+async def catalog(ctx, *, search: str = None):
+    # 1. Fetch all cards
+    all_cards = fetch_all_cards()
+    
+    if not all_cards:
+        return await ctx.send("The game database appears to be empty.")
+
+    view = CatalogView(all_cards, ctx)
+
+    # 2. Apply Search if provided (e.g. /catalog messi)
+    if search:
+        search = search.lower()
+        view.filter_name = search
+        # Apply Logic
+        view.apply_filters()
+        
+        # Force Sort to Overall
+        view.data.sort(key=lambda x: x[0].overall, reverse=True)
+        view.sort_label = "Overall"
+        
+        if not view.data:
+            return await ctx.send(f"No cards found matching '{search}' in the catalog.")
+
+    embed = view.update_view()
+    view.update_buttons() # Ensure Reset button appears if filtered
+    view.message = await ctx.send(embed=embed, view=view)
 #-----------------------------------ADMIN COMMANDS----------------------------------
 
 @bot.command(name='give_coins')
