@@ -1971,6 +1971,7 @@ class Battle:
         self.player1 = player1
         self.player2 = player2
         
+        # State Data
         self.player1_deck = []
         self.player2_deck = []
         self.player1_used_cards = []
@@ -1981,17 +1982,19 @@ class Battle:
         self.draws = 0 
         self.round = 1
         
-        self.turn_player = player1 
+        # --- FIX: Add this flag to prevent double counting ---
+        self.round_resolved = False 
+        self.last_result_text = ""
+        self.last_winner = None
         
+        self.turn_player = player1 
         self.p1_action = None
         self.p2_action = None
         self.p1_card = None
         self.p2_card = None
         
-        # Track who has offered a draw
         self.draw_offers = set()
-        
-        self.phase = "SETUP" 
+        self.phase = "SETUP"
 
     async def start(self):
         embed = discord.Embed(title="⚔️ Battle Arena ⚔️", description="Both players must select their decks to begin.")
@@ -2114,15 +2117,28 @@ class Battle:
             else:
                 await self.message.edit(embed=embed, view=view)
 
+
         # 4. RESULT
         elif self.phase == "RESULT":
-            result_text, winner = self.calculate_winner()
-            self.update_round_db_stats(winner)
-            
-            if winner: await self.check_achievements(winner.id, 'rounds_won', interaction)
+            # --- FIX: Only calculate and update stats if not done yet ---
+            if not self.round_resolved:
+                result_text, winner = self.calculate_winner()
+                self.update_round_db_stats(winner)
+                
+                if winner: 
+                    await self.check_achievements(winner.id, 'rounds_won', interaction)
 
-            self.player1_used_cards.append(self.p1_card)
-            self.player2_used_cards.append(self.p2_card)
+                self.player1_used_cards.append(self.p1_card)
+                self.player2_used_cards.append(self.p2_card)
+                
+                # Save result so we can just display it if this runs again
+                self.last_result_text = result_text
+                self.last_winner = winner
+                self.round_resolved = True
+            else:
+                # Use the cached result if function runs twice
+                result_text = self.last_result_text
+                winner = self.last_winner
 
             embed = discord.Embed(title=f"⚔️ Round {self.round} Result", description=result_text, color=discord.Color.purple())
             embed.add_field(name=f"{self.player1.name} ({self.p1_action})", value=f"**{self.p1_card.name}**\n⭐ {self.p1_card.overall}\n⚔️ {self.p1_card.attack} | 🛡️ {self.p1_card.defense} | ⚡ {self.p1_card.speed}", inline=True)
@@ -2415,19 +2431,30 @@ class NextRoundView(discord.ui.View):
 
     @discord.ui.button(label="Ready for Next Round", style=discord.ButtonStyle.primary, row=0)
     async def next_round(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id not in [self.battle.player1.id, self.battle.player2.id]: return await interaction.response.send_message("Not your battle.", ephemeral=True)
-        if interaction.user.id in self.ready_players: return await interaction.response.send_message("Waiting for opponent...", ephemeral=True)
+        if interaction.user.id not in [self.battle.player1.id, self.battle.player2.id]: 
+            return await interaction.response.send_message("Not your battle.", ephemeral=True)
+        
+        if interaction.user.id in self.ready_players: 
+            return await interaction.response.send_message("Waiting for opponent...", ephemeral=True)
 
         self.ready_players.add(interaction.user.id)
+        
         if len(self.ready_players) == 2:
+            # RESET ROUND DATA
             self.battle.p1_action = None
             self.battle.p2_action = None
             self.battle.p1_card = None
             self.battle.p2_card = None
             self.battle.round += 1
             
-            if self.battle.turn_player.id == self.battle.player1.id: self.battle.turn_player = self.battle.player2
-            else: self.battle.turn_player = self.battle.player1
+            # --- FIX: Reset the safety flag for the new round ---
+            self.battle.round_resolved = False 
+            
+            # Rotate Turn
+            if self.battle.turn_player.id == self.battle.player1.id: 
+                self.battle.turn_player = self.battle.player2
+            else: 
+                self.battle.turn_player = self.battle.player1
 
             self.battle.phase = "ACTION"
             await self.battle.update_game_state(interaction)
