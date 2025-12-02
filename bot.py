@@ -2317,38 +2317,29 @@ class ExchangeView(discord.ui.View):
         
         try:
             # 1. FINAL ASSET VERIFICATION
-            
-            # Check P1 Coins
             cursor.execute('SELECT coins FROM players WHERE user_id = ?', (self.session.p1.id,))
             if cursor.fetchone()[0] < self.session.p1_offer['coins']: raise ValueError(f"{self.session.p1.name} missing coins.")
             
-            # Check P2 Coins
             cursor.execute('SELECT coins FROM players WHERE user_id = ?', (self.session.p2.id,))
             if cursor.fetchone()[0] < self.session.p2_offer['coins']: raise ValueError(f"{self.session.p2.name} missing coins.")
 
             # Check P1 Cards Ownership & P2 Duplicate Check
             for card in self.session.p1_offer['cards']:
-                # P1 still has it?
                 cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p1.id, card.card_id))
                 if not cursor.fetchone(): raise ValueError(f"{self.session.p1.name} no longer owns {card.name}")
                 
-                # P2 already has it?
                 cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p2.id, card.card_id))
                 if cursor.fetchone(): raise ValueError(f"{self.session.p2.name} already owns {card.name}")
 
             # Check P2 Cards Ownership & P1 Duplicate Check
             for card in self.session.p2_offer['cards']:
-                # P2 still has it?
                 cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p2.id, card.card_id))
                 if not cursor.fetchone(): raise ValueError(f"{self.session.p2.name} no longer owns {card.name}")
                 
-                # P1 already has it?
                 cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p1.id, card.card_id))
                 if cursor.fetchone(): raise ValueError(f"{self.session.p1.name} already owns {card.name}")
 
-            # 2. EXECUTE SWAPS
-            
-            # Transfer Coins
+            # 2. EXECUTE SWAPS (Coins)
             if self.session.p1_offer['coins'] > 0:
                 cursor.execute('UPDATE players SET coins = coins - ? WHERE user_id = ?', (self.session.p1_offer['coins'], self.session.p1.id))
                 cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (self.session.p1_offer['coins'], self.session.p2.id))
@@ -2357,7 +2348,7 @@ class ExchangeView(discord.ui.View):
                 cursor.execute('UPDATE players SET coins = coins - ? WHERE user_id = ?', (self.session.p2_offer['coins'], self.session.p2.id))
                 cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (self.session.p2_offer['coins'], self.session.p1.id))
 
-            # Transfer Cards
+            # 3. EXECUTE SWAPS (Cards)
             for card in self.session.p1_offer['cards']:
                 cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE card_id = ?', (self.session.p2.id, card.card_id))
             
@@ -2366,7 +2357,28 @@ class ExchangeView(discord.ui.View):
 
             conn.commit()
             
-            embed = discord.Embed(title="✅ Exchange Complete!", description="Items transferred successfully.", color=discord.Color.green())
+            # --- NEW SUMMARY EMBED ---
+            embed = discord.Embed(title="✅ Exchange Complete!", color=discord.Color.green())
+            
+            # Format P1 Summary
+            p1_items = []
+            if self.session.p1_offer['coins'] > 0:
+                p1_items.append(f"💰 {self.session.p1_offer['coins']:,} Coins")
+            for c in self.session.p1_offer['cards']:
+                p1_items.append(f"🃏 {c.name}")
+            p1_val = "\n".join(p1_items) if p1_items else "*Nothing*"
+
+            # Format P2 Summary
+            p2_items = []
+            if self.session.p2_offer['coins'] > 0:
+                p2_items.append(f"💰 {self.session.p2_offer['coins']:,} Coins")
+            for c in self.session.p2_offer['cards']:
+                p2_items.append(f"🃏 {c.name}")
+            p2_val = "\n".join(p2_items) if p2_items else "*Nothing*"
+
+            embed.add_field(name=f"{self.session.p1.name} sent:", value=p1_val, inline=True)
+            embed.add_field(name=f"{self.session.p2.name} sent:", value=p2_val, inline=True)
+            
             await interaction.response.edit_message(embed=embed, view=None)
             self.stop()
 
