@@ -210,6 +210,8 @@ async def on_command_error(ctx, error):
 
 #---------------------------------------------------------HELP-------------------------------------------------------------------------------------
 
+#---------------------------------------------------------HELP-------------------------------------------------------------------------------------
+
 # Remove default help to replace it with ours
 bot.remove_command('help')
 
@@ -218,7 +220,7 @@ class HelpSelect(discord.ui.Select):
         options = [
             discord.SelectOption(label="Home", description="Back to main menu", emoji="🏠", value="home"),
             discord.SelectOption(label="Battle Arena", description="Combat, Decks, and Tactics", emoji="⚔️", value="battle"),
-            discord.SelectOption(label="Collection", description="Inventory, Viewing Cards, Packs", emoji="🎒", value="collection"),
+            discord.SelectOption(label="Collection", description="Inventory, Catalog, Packs", emoji="🎒", value="collection"),
             discord.SelectOption(label="Economy & Market", description="Coins, Shop, Trading, Exchange", emoji="💰", value="economy"),
             discord.SelectOption(label="Stats & Rankings", description="Leaderboards and Achievements", emoji="🏆", value="stats"),
             discord.SelectOption(label="Bot Info", description="Version, Changelog, Extras", emoji="ℹ️", value="info")
@@ -245,7 +247,8 @@ class HelpSelect(discord.ui.Select):
 
         elif value == "collection":
             embed = discord.Embed(title="🎒 Collection & Items", color=discord.Color.blue())
-            embed.add_field(name="`/inventory`", value="View your card collection with filters and sorting.", inline=False)
+            embed.add_field(name="`/inventory`", value="View your owned cards with filters and sorting.", inline=False)
+            embed.add_field(name="`/catalog [search]`", value="View ALL cards in the game database.", inline=False)
             embed.add_field(name="`/view [name_or_id]`", value="Inspect a specific card's full details and art.", inline=False)
             embed.add_field(name="`/packs`", value="See your unopened card packs.", inline=False)
             embed.add_field(name="`/open [pack_id]`", value="Open a pack to get new players.", inline=False)
@@ -3730,7 +3733,7 @@ class CatalogView(discord.ui.View):
         for card, _ in page_items:
             # --- EXACT INVENTORY UI FORMAT ---
             # Using 'N/A' for Edition since we don't own these specific cards
-            line = f"**{card.name} (ID: {card.card_id})** - Edition: N/A, Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
+            line = f"**{card.name} (ID: {card.card_id})** -Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
             card_descriptions.append(line)
 
         description = '\n'.join(card_descriptions) if card_descriptions else "No cards found matching your filters."
