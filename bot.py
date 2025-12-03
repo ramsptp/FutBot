@@ -128,39 +128,28 @@ def migrate_db():
         conn = sqlite3.connect('cards_game.db')
         cursor = conn.cursor()
         
-        # Check existing columns to avoid errors
-        cursor.execute("PRAGMA table_info(players)")
-        player_columns = [info[1] for info in cursor.fetchall()]
-        if 'rounds_drawn' not in player_columns:
-            cursor.execute("ALTER TABLE players ADD COLUMN rounds_drawn INTEGER DEFAULT 0")
-        if 'battles_drawn' not in player_columns:
-            cursor.execute("ALTER TABLE players ADD COLUMN battles_drawn INTEGER DEFAULT 0")
+        # ... (Keep previous Player/Wishlist checks) ...
 
+        # --- NEW: Card Stats (Individual Copies in Inventory) ---
         cursor.execute("PRAGMA table_info(inventories)")
         inv_columns = [info[1] for info in cursor.fetchall()]
-        if 'trade_count' not in inv_columns:
-            cursor.execute("ALTER TABLE inventories ADD COLUMN trade_count INTEGER DEFAULT 0")
+        
+        stats_cols = ['battles_played', 'battles_won', 'rounds_played', 'rounds_won']
+        for col in stats_cols:
+            if col not in inv_columns:
+                print(f"Migrating DB: Adding {col} to inventories...")
+                cursor.execute(f"ALTER TABLE inventories ADD COLUMN {col} INTEGER DEFAULT 0")
 
-        # --- NEW: Wishlist Updates ---
+        # --- NEW: Card Stats (Global Totals in Cards table) ---
         cursor.execute("PRAGMA table_info(cards)")
         card_columns = [info[1] for info in cursor.fetchall()]
         
-        # 1. Add count column to cards for fast viewing
-        if 'wishlist_count' not in card_columns:
-            print("Migrating DB: Adding wishlist_count to cards...")
-            cursor.execute("ALTER TABLE cards ADD COLUMN wishlist_count INTEGER DEFAULT 0")
+        global_cols = ['total_battles_played', 'total_battles_won', 'total_rounds_played', 'total_rounds_won']
+        for col in global_cols:
+            if col not in card_columns:
+                print(f"Migrating DB: Adding {col} to cards...")
+                cursor.execute(f"ALTER TABLE cards ADD COLUMN {col} INTEGER DEFAULT 0")
 
-        # 2. Create the connection table
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS wishlists (
-            user_id INTEGER,
-            card_id INTEGER,
-            PRIMARY KEY (user_id, card_id),
-            FOREIGN KEY(user_id) REFERENCES players(user_id),
-            FOREIGN KEY(card_id) REFERENCES cards(card_id)
-        )
-        ''')
-            
         conn.commit()
         conn.close()
         print("Database migration complete.")
@@ -324,7 +313,7 @@ async def help_command(ctx):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.4.0"
+BOT_VERSION = "1.4.1"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 CHANGELOG = ['''1.0.0 - Initial realease 
@@ -348,7 +337,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.8- Global & Server Leaderboards
 1.3.9- Lookup Command Added
 1.3.10- Lookup Mint Card Image Generation
-1.4.0- Wishlist System Added''']
+1.4.0- Wishlist System Added
+1.4.1- More Card Stats Tracking ''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -1280,6 +1270,7 @@ class ToggleWishlistButton(discord.ui.Button):
         cursor = conn.cursor()
 
         try:
+            # 1. Toggle Wishlist Logic
             cursor.execute('SELECT 1 FROM wishlists WHERE user_id = ? AND card_id = ?', (interaction.user.id, self.card_id))
             exists = cursor.fetchone()
 
@@ -1287,6 +1278,7 @@ class ToggleWishlistButton(discord.ui.Button):
                 cursor.execute('DELETE FROM wishlists WHERE user_id = ? AND card_id = ?', (interaction.user.id, self.card_id))
                 cursor.execute('UPDATE cards SET wishlist_count = MAX(0, wishlist_count - 1) WHERE card_id = ?', (self.card_id,))
                 
+                # Update Button Visuals
                 self.style = discord.ButtonStyle.secondary
                 self.label = "Add to Wishlist"
                 self.emoji = "❤️"
@@ -1296,6 +1288,7 @@ class ToggleWishlistButton(discord.ui.Button):
                 cursor.execute('INSERT INTO wishlists (user_id, card_id) VALUES (?, ?)', (interaction.user.id, self.card_id))
                 cursor.execute('UPDATE cards SET wishlist_count = wishlist_count + 1 WHERE card_id = ?', (self.card_id,))
                 
+                # Update Button Visuals
                 self.style = discord.ButtonStyle.red
                 self.label = "Remove from Wishlist"
                 self.emoji = "💔"
@@ -1304,21 +1297,43 @@ class ToggleWishlistButton(discord.ui.Button):
 
             conn.commit()
 
-            cursor.execute('SELECT wishlist_count FROM cards WHERE card_id = ?', (self.card_id,))
-            new_count = cursor.fetchone()[0]
+            # 2. Fetch Fresh Stats to Rebuild Embed
+            cursor.execute('''
+                SELECT wishlist_count, 
+                       total_battles_played, total_battles_won, 
+                       total_rounds_played, total_rounds_won 
+                FROM cards WHERE card_id = ?
+            ''', (self.card_id,))
+            
+            row = cursor.fetchone()
+            # Safety defaults
+            wl_count = row[0] if row else 0
+            g_b_played = row[1] if row else 0
+            g_b_won = row[2] if row else 0
+            g_r_played = row[3] if row else 0
+            g_r_won = row[4] if row else 0
+            
             conn.close()
 
-            # Update Embed
+            # 3. Reconstruct the Field Text
+            win_rate = f"{(g_b_won / g_b_played * 100):.1f}%" if g_b_played > 0 else "0%"
+            
+            new_meta_stats = (
+                f"❤️ **{wl_count}** Wishlists\n"
+                f"⚔️ **Battles:** {g_b_won}/{g_b_played} ({win_rate})\n"
+                f"🔄 **Rounds:** {g_r_won}/{g_r_played}"
+            )
+
+            # 4. Update the Message Embed
             embed = interaction.message.embeds[0]
             
-            # Update the Popularity Field
+            # Find the "Global Statistics" field and update it
             for i, field in enumerate(embed.fields):
-                if field.name == "Popularity":
-                    embed.set_field_at(i, name="Popularity", value=f"❤️ {new_count} Wishlists", inline=True)
+                if field.name == "Global Statistics":
+                    embed.set_field_at(i, name="Global Statistics", value=new_meta_stats, inline=False)
                     break
             
-            # --- FIX: FORCE REMOVE IMAGE INSIDE EMBED ---
-            # This ensures the image stays as an "Attachment" on top, and doesn't duplicate inside.
+            # Ensure image stays on top (by not setting it in embed)
             embed.set_image(url=None) 
             
             await interaction.response.edit_message(embed=embed, view=self.view)
@@ -1358,61 +1373,72 @@ async def view(ctx, *, identifier: str):
             conn = sqlite3.connect('cards_game.db')
             cursor = conn.cursor()
             
-            # 1. Get Ownership info
+            # 1. Get Ownership
             cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
             inventory_entry = cursor.fetchone()
             
-            # 2. Get Global Wishlist Count
-            cursor.execute('SELECT wishlist_count FROM cards WHERE card_id = ?', (card.card_id,))
-            wl_count_row = cursor.fetchone()
-            wl_count = wl_count_row[0] if wl_count_row else 0
-
-            # 3. Check if THIS user has wishlisted it (for button state)
+            # 2. Get Global Stats (Updated Query)
+            # Now fetching Rounds stats as well
+            cursor.execute('''
+                SELECT wishlist_count, 
+                       total_battles_played, total_battles_won, 
+                       total_rounds_played, total_rounds_won 
+                FROM cards WHERE card_id = ?
+            ''', (card.card_id,))
+            
+            row = cursor.fetchone()
+            # Safety defaults
+            wl_count = row[0] if row else 0
+            g_b_played = row[1] if row else 0
+            g_b_won = row[2] if row else 0
+            g_r_played = row[3] if row else 0
+            g_r_won = row[4] if row else 0
+            
+            # 3. Check Wishlist State
             cursor.execute('SELECT 1 FROM wishlists WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
             is_wishlisted = cursor.fetchone() is not None
             
             conn.close()
             
             owned_by_user = "Yes" if inventory_entry else "No"
+            
+            # Calculate Win Rate
+            win_rate = f"{(g_b_won / g_b_played * 100):.1f}%" if g_b_played > 0 else "0%"
 
             embed = discord.Embed(title=f"**{card.name}**", color=discord.Color.blue())
-            embed.add_field(name="ID", value=card.card_id, inline=True)
-            embed.add_field(name="Rarity", value=card.card_rarity, inline=True)
-            embed.add_field(name="Type", value=card.card_type, inline=True)
             
-            # Popularity Field
-            embed.add_field(name="Popularity", value=f"❤️ {wl_count} Wishlists", inline=True)
+            # Field 1: Core Info
+            embed.add_field(name="Info", value=f"🆔 {card.card_id}\n💎 {card.card_rarity}\n🏆 {card.card_type}", inline=True)
             
-            embed.add_field(name="Attack", value=card.attack, inline=True)
-            embed.add_field(name="Defense", value=card.defense, inline=True)
-            embed.add_field(name="Speed", value=card.speed, inline=True)
-            embed.add_field(name="Height", value=card.height, inline=True)
-            embed.add_field(name="Club", value=card.club, inline=True)
-            embed.add_field(name="Position", value=card.position, inline=True)
-            embed.add_field(name="Overall", value=card.overall, inline=True)
-            embed.add_field(name="League", value=card.league, inline=True)
-            embed.add_field(name="Nation", value=card.nation, inline=True)
-            embed.add_field(name="Copies", value=card.copies, inline=True)
-            embed.add_field(name="Owned by User", value=owned_by_user, inline=True)
+            # Field 2: Base Stats (Single Line, Overall First)
+            embed.add_field(name="Base Stats", value=f"⭐ **{card.overall}** | ⚔️ {card.attack} | 🛡️ {card.defense} | ⚡ {card.speed}", inline=True)
+            
+            # Field 3: Global Performance (Detailed)
+            meta_stats = (
+                f"❤️ **{wl_count}** Wishlists\n"
+                f"⚔️ **Battles:** {g_b_won}/{g_b_played} ({win_rate})\n"
+                f"🔄 **Rounds:** {g_r_won}/{g_r_played}"
+            )
+            embed.add_field(name="Global Statistics", value=meta_stats, inline=False)
+            
+            # Removed Bio Details (Height, Club, etc.) as requested
             
             if owned_by_user == "Yes":
                 trade_count = inventory_entry[0]
                 ownership = "First Owner" if trade_count == 0 else "Traded In"
-                embed.add_field(name="Ownership", value=ownership, inline=True)
+                embed.add_field(name="Your Inventory", value=f"✅ Owned ({ownership})", inline=True)
 
             embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
-            # --- ATTACH THE VIEW ---
             view = CardDetailsView(ctx, card.card_id, is_wishlisted)
             await ctx.send(embed=embed, file=discord.File(card.image_path), view=view)
             
-            logger.info(f'{ctx.author.name} viewed card {card.name} (ID: {card.card_id})')
+            logger.info(f'{ctx.author.name} viewed card {card.name}')
         else:
             view = ViewCardSelectView(cards, ctx.author)
             await ctx.send("Multiple cards found, please select one:", view=view)
     else:
         await ctx.send(f'No card found with the identifier {identifier}')
-
 
 
 
@@ -1559,7 +1585,8 @@ async def lookup(ctx, card_id: int, user: discord.User = None):
     
     cursor.execute('''
         SELECT c.name, c.overall, c.attack, c.defense, c.speed, 
-               c.card_rarity, c.card_type, c.image_path, c.copies, i.edition
+               c.card_rarity, c.card_type, c.image_path, c.copies, i.edition,
+               i.battles_played, i.battles_won, i.rounds_played, i.rounds_won
         FROM inventories i
         JOIN cards c ON i.card_id = c.card_id
         WHERE i.user_id = ? AND i.card_id = ?
@@ -1571,8 +1598,10 @@ async def lookup(ctx, card_id: int, user: discord.User = None):
     if not result:
         return await ctx.send(f"❌ **{target_user.name}** does not own Card ID `{card_id}`.")
 
-    name, overall, atk, def_, spd, rarity, type_, image_path, total_copies, edition = result
+    name, overall, atk, def_, spd, rarity, type_, image_path, total_copies, edition, b_played, b_won, r_played, r_won = result
+    
     edition_str = f"#{edition}/{total_copies}"
+    win_rate = f"{(b_won / b_played * 100):.1f}%" if b_played > 0 else "0%"
 
     # --- GENERATE IMAGE ---
     try:
@@ -1596,15 +1625,20 @@ async def lookup(ctx, card_id: int, user: discord.User = None):
     
     # --- BUILD EMBED ---
     embed = discord.Embed(title=f"🔍 Card Inspection: {name}", color=discord.Color.gold())
-    
-    # FIX: Added Property Of line back to the Embed Header
     embed.set_author(name=f"Property of {target_user.name}", icon_url=target_user.display_avatar.url)
-
+    
     embed.add_field(name="Mint Details", value=f"🆔 **ID:** {card_id}\n#️⃣ **Edition:** {edition_str}", inline=True)
     embed.add_field(name="Card Info", value=f"💎 {rarity}\n🏆 {type_}", inline=True)
-    embed.add_field(name="Performance", value=f"⭐ **{overall}** | ⚔️ {atk} | 🛡️ {def_} | ⚡ {spd}", inline=False)
+    
+    # Renamed to Base Stats
+    embed.add_field(name="Base Stats", value=f"⭐ **{overall}** | ⚔️ {atk} | 🛡️ {def_} | ⚡ {spd}", inline=False)
+    
+    stats_text = (
+        f"⚔️ **Battles:** {b_won}/{b_played} ({win_rate})\n"
+        f"🔄 **Rounds:** {r_won}/{r_played}"
+    )
+    embed.add_field(name="Match Record (This Copy)", value=stats_text, inline=False)
 
-    # Note: No set_image() here, so the file appears ABOVE the embed
     await ctx.send(file=file, embed=embed)
 
 
@@ -3074,6 +3108,10 @@ class Battle:
                 return f"🤝 **It's a Draw!** Both stats and overall are equal!", None
 
     def update_round_db_stats(self, winner):
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+
+        # Update Player Stats
         cursor.execute('UPDATE players SET rounds_played = rounds_played + 1 WHERE user_id = ?', (self.player1.id,))
         cursor.execute('UPDATE players SET rounds_played = rounds_played + 1 WHERE user_id = ?', (self.player2.id,))
         
@@ -3084,7 +3122,19 @@ class Battle:
         else:
             cursor.execute('UPDATE players SET rounds_drawn = rounds_drawn + 1 WHERE user_id = ?', (self.player1.id,))
             cursor.execute('UPDATE players SET rounds_drawn = rounds_drawn + 1 WHERE user_id = ?', (self.player2.id,))
+
+        # Update Card Stats (Rounds)
+        for card, user in [(self.p1_card, self.player1), (self.p2_card, self.player2)]:
+            cursor.execute('UPDATE inventories SET rounds_played = rounds_played + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
+            cursor.execute('UPDATE cards SET total_rounds_played = total_rounds_played + 1 WHERE card_id = ?', (card.card_id,))
+
+        if winner:
+            winning_card = self.p1_card if winner == self.player1 else self.p2_card
+            cursor.execute('UPDATE inventories SET rounds_won = rounds_won + 1 WHERE card_id = ? AND user_id = ?', (winning_card.card_id, winner.id))
+            cursor.execute('UPDATE cards SET total_rounds_won = total_rounds_won + 1 WHERE card_id = ?', (winning_card.card_id,))
+
         conn.commit()
+        conn.close()
 
     async def end_game(self, interaction, last_round_embed):
         winner, loser, is_draw = None, None, False
@@ -3095,8 +3145,21 @@ class Battle:
         else:
             is_draw = True
 
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+
         cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player1.id,))
         cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player2.id,))
+
+        # Helper to update deck stats (Battles)
+        def update_deck_stats(deck, user, won_battle):
+            for card in deck:
+                cursor.execute('UPDATE inventories SET battles_played = battles_played + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
+                cursor.execute('UPDATE cards SET total_battles_played = total_battles_played + 1 WHERE card_id = ?', (card.card_id,))
+                
+                if won_battle:
+                    cursor.execute('UPDATE inventories SET battles_won = battles_won + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
+                    cursor.execute('UPDATE cards SET total_battles_won = total_battles_won + 1 WHERE card_id = ?', (card.card_id,))
 
         if is_draw:
              cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
@@ -3104,6 +3167,9 @@ class Battle:
              add_loser_coins(self.player1.id)
              add_loser_coins(self.player2.id)
              
+             update_deck_stats(self.player1_deck, self.player1, False)
+             update_deck_stats(self.player2_deck, self.player2, False)
+
              embed = discord.Embed(title="🤝 Battle Drawn 🤝", color=discord.Color.greyple())
              embed.add_field(name="Result", value="The battle ended in a draw!", inline=False)
              embed.add_field(name="Rewards", value="Both players received +100 Coins", inline=False)
@@ -3113,17 +3179,27 @@ class Battle:
             add_winner_coins(winner.id)
             add_loser_coins(loser.id)
             await self.check_achievements(winner.id, 'battles_won', interaction)
+            
+            update_deck_stats(self.player1_deck, self.player1, (winner == self.player1))
+            update_deck_stats(self.player2_deck, self.player2, (winner == self.player2))
 
             embed = discord.Embed(title="🏆 Battle Finished 🏆", color=discord.Color.gold())
             embed.add_field(name="Winner", value=f"**{winner.name}**", inline=False)
             embed.add_field(name="Rewards", value=f"{winner.name}: +200 Coins\n{loser.name}: +100 Coins", inline=False)
         
+        conn.commit()
+        conn.close()
+
         embed.add_field(name="Final Score", value=f"{self.player1.name}: {self.player1_wins} | {self.player2.name}: {self.player2_wins} | Draws: {self.draws}", inline=False)
         if last_round_embed:
              embed.add_field(name="Last Round", value=last_round_embed.description, inline=False)
 
         # Use self.message to edit because interaction might be stale/from previous step
         await self.message.edit(embed=embed, view=None)
+
+
+
+
 
     async def check_achievements(self, user_id, stat_type, interaction):
         try:
@@ -3147,6 +3223,7 @@ class Battle:
             conn.close()
         except Exception as e:
             logger.error(f"Error checking achievements: {e}")
+
 
 # ---------------- VIEWS ----------------
 
