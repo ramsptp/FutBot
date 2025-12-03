@@ -1264,27 +1264,123 @@ class ViewCardSelectView(View):
         self.add_item(ViewCardSelect(cards, user))
 
 
+class ToggleWishlistButton(discord.ui.Button):
+    def __init__(self, card_id, is_wishlisted):
+        # Dynamic style/label based on initial state
+        label = "Remove from Wishlist" if is_wishlisted else "Add to Wishlist"
+        emoji = "💔" if is_wishlisted else "❤️"
+        style = discord.ButtonStyle.red if is_wishlisted else discord.ButtonStyle.secondary
+        
+        super().__init__(style=style, label=label, emoji=emoji, custom_id=f"wl_toggle_{card_id}")
+        self.card_id = card_id
+        self.is_wishlisted = is_wishlisted
+
+    async def callback(self, interaction: discord.Interaction):
+        # Only the person who invoked the command (or owner) can usually interact, 
+        # but for Wishlists, ANYONE should be able to wishlist the card they are looking at.
+        # So we use interaction.user.id directly.
+
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+
+        try:
+            # Check current state for THIS user (the clicker)
+            cursor.execute('SELECT 1 FROM wishlists WHERE user_id = ? AND card_id = ?', (interaction.user.id, self.card_id))
+            exists = cursor.fetchone()
+
+            if exists:
+                # REMOVE
+                cursor.execute('DELETE FROM wishlists WHERE user_id = ? AND card_id = ?', (interaction.user.id, self.card_id))
+                cursor.execute('UPDATE cards SET wishlist_count = MAX(0, wishlist_count - 1) WHERE card_id = ?', (self.card_id,))
+                
+                # Update Button State for the CLICKER
+                # Note: This is tricky because the button updates for EVERYONE on the message.
+                # Standard discord behavior: modifying the view updates it for everyone.
+                # So we update the button to reflect the state of the person who just clicked.
+                self.style = discord.ButtonStyle.secondary
+                self.label = "Add to Wishlist"
+                self.emoji = "❤️"
+                self.is_wishlisted = False
+                
+                action_msg = "Removed from your wishlist."
+            else:
+                # ADD
+                cursor.execute('INSERT INTO wishlists (user_id, card_id) VALUES (?, ?)', (interaction.user.id, self.card_id))
+                cursor.execute('UPDATE cards SET wishlist_count = wishlist_count + 1 WHERE card_id = ?', (self.card_id,))
+                
+                self.style = discord.ButtonStyle.red
+                self.label = "Remove from Wishlist"
+                self.emoji = "💔"
+                self.is_wishlisted = True
+                
+                action_msg = "Added to your wishlist."
+
+            conn.commit()
+
+            # Get new global count to update Embed
+            cursor.execute('SELECT wishlist_count FROM cards WHERE card_id = ?', (self.card_id,))
+            new_count = cursor.fetchone()[0]
+            conn.close()
+
+            # Update Embed "Popularity" Field
+            embed = interaction.message.embeds[0]
+            # We need to find the field named "Popularity" and update it
+            for i, field in enumerate(embed.fields):
+                if field.name == "Popularity":
+                    embed.set_field_at(i, name="Popularity", value=f"❤️ {new_count} Wishlists", inline=True)
+                    break
+            
+            # Send hidden confirmation
+            await interaction.response.edit_message(embed=embed, view=self.view)
+            await interaction.followup.send(f"✅ {action_msg}", ephemeral=True)
+
+        except Exception as e:
+            if conn: conn.close()
+            print(f"Wishlist Button Error: {e}")
+            await interaction.response.send_message("Error updating wishlist.", ephemeral=True)
+
+class CardDetailsView(discord.ui.View):
+    def __init__(self, ctx, card_id, is_wishlisted):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.add_item(ToggleWishlistButton(card_id, is_wishlisted))
+
+    # --- SECURITY CHECK ---
+    # This prevents other users from clicking the button
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("⛔ This is not your menu. Run `/view` yourself to wishlist this card!", ephemeral=True)
+            return False
+        return True
+
+
+
 
 @bot.hybrid_command(name='view', description="View details of a card")
 async def view(ctx, *, identifier: str):
     ensure_player_exists(ctx.author.id, ctx.author.name)
     cards = get_card_by_name_or_id(identifier)
+    
     if cards:
         if len(cards) == 1:
             card = cards[0]
             
-            # Check if the user owns the card
             conn = sqlite3.connect('cards_game.db')
             cursor = conn.cursor()
-
-
+            
+            # 1. Get Ownership info
+            cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
+            inventory_entry = cursor.fetchone()
+            
+            # 2. Get Global Wishlist Count
             cursor.execute('SELECT wishlist_count FROM cards WHERE card_id = ?', (card.card_id,))
             wl_count_row = cursor.fetchone()
             wl_count = wl_count_row[0] if wl_count_row else 0
 
-
-            cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
-            inventory_entry = cursor.fetchone()
+            # 3. Check if THIS user has wishlisted it (for button state)
+            cursor.execute('SELECT 1 FROM wishlists WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
+            is_wishlisted = cursor.fetchone() is not None
+            
             conn.close()
             
             owned_by_user = "Yes" if inventory_entry else "No"
@@ -1293,7 +1389,10 @@ async def view(ctx, *, identifier: str):
             embed.add_field(name="ID", value=card.card_id, inline=True)
             embed.add_field(name="Rarity", value=card.card_rarity, inline=True)
             embed.add_field(name="Type", value=card.card_type, inline=True)
+            
+            # Popularity Field
             embed.add_field(name="Popularity", value=f"❤️ {wl_count} Wishlists", inline=True)
+            
             embed.add_field(name="Attack", value=card.attack, inline=True)
             embed.add_field(name="Defense", value=card.defense, inline=True)
             embed.add_field(name="Speed", value=card.speed, inline=True)
@@ -1306,7 +1405,6 @@ async def view(ctx, *, identifier: str):
             embed.add_field(name="Copies", value=card.copies, inline=True)
             embed.add_field(name="Owned by User", value=owned_by_user, inline=True)
             
-            # Add Ownership field if the card is owned by the user
             if owned_by_user == "Yes":
                 trade_count = inventory_entry[0]
                 ownership = "First Owner" if trade_count == 0 else "Traded In"
@@ -1315,14 +1413,18 @@ async def view(ctx, *, identifier: str):
             embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
             embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
-            await ctx.send(embed=embed, file=discord.File(card.image_path))
+            # --- ATTACH THE VIEW ---
+            view = CardDetailsView(ctx, card.card_id, is_wishlisted)
+            await ctx.send(embed=embed, file=discord.File(card.image_path), view=view)
+            
             logger.info(f'{ctx.author.name} viewed card {card.name} (ID: {card.card_id})')
         else:
             view = ViewCardSelectView(cards, ctx.author)
             await ctx.send("Multiple cards found, please select one:", view=view)
     else:
         await ctx.send(f'No card found with the identifier {identifier}')
-        logger.info(f'{ctx.author.name} tried to view card with identifier {identifier} but it was not found')
+
+
 
 
 #---------------------------------------------------------LOOKUP-------------------------------------------------------------------------------------
