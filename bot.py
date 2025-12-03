@@ -1218,41 +1218,87 @@ def get_card_by_name_or_id(identifier):
 from discord.ui import Select, View
 
 class ViewCardSelect(discord.ui.Select):
-    def __init__(self, cards, user):
-        options = [discord.SelectOption(label=f"{card.name} - {card.card_type}", description=f"ID: {card.card_id}", value=f"{card.card_id}-{i}") for i, card in enumerate(cards)]
+    def __init__(self, cards, user, ctx):
+        # Added ctx to init so we can pass it to the View later
+        options = [discord.SelectOption(label=f"{card.name} - {card.card_type}", description=f"ID: {card.card_id} | OVR: {card.overall}", value=f"{card.card_id}-{i}") for i, card in enumerate(cards)]
         super().__init__(placeholder="Select the card...", min_values=1, max_values=1, options=options)
         self.cards = cards
         self.user = user
+        self.ctx = ctx
 
     async def callback(self, interaction: discord.Interaction):
+        # 1. Identify Selected Card
         selected_card_id, _ = self.values[0].split('-')
         selected_card_id = int(selected_card_id)
-        selected_card = next(card for card in self.cards if card.card_id == selected_card_id)
+        card = next(c for c in self.cards if c.card_id == selected_card_id)
 
-        embed = discord.Embed(title=f"**{selected_card.name}**", color=discord.Color.blue())
-        embed.add_field(name="ID", value=selected_card.card_id, inline=True)
-        embed.add_field(name="Rarity", value=selected_card.card_rarity, inline=True)
-        embed.add_field(name="Type", value=selected_card.card_type, inline=True)
-        embed.add_field(name="Attack", value=selected_card.attack, inline=True)
-        embed.add_field(name="Defense", value=selected_card.defense, inline=True)
-        embed.add_field(name="Speed", value=selected_card.speed, inline=True)
-        embed.add_field(name="Height", value=selected_card.height, inline=True)
-        embed.add_field(name="Club", value=selected_card.club, inline=True)
-        embed.add_field(name="Position", value=selected_card.position, inline=True)
-        embed.add_field(name="Overall", value=selected_card.overall, inline=True)
-        embed.add_field(name="League", value=selected_card.league, inline=True)
-        embed.add_field(name="Nation", value=selected_card.nation, inline=True)
-        embed.add_field(name="Copies", value=selected_card.copies, inline=True)
-        embed.set_image(url=f"attachment://{selected_card.image_path.split('/')[-1]}")
+        # 2. Fetch Advanced Stats from DB
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        
+        # Ownership
+        cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (self.user.id, card.card_id))
+        inventory_entry = cursor.fetchone()
+        
+        # Global Stats
+        cursor.execute('''
+            SELECT wishlist_count, 
+                   total_battles_played, total_battles_won, 
+                   total_rounds_played, total_rounds_won 
+            FROM cards WHERE card_id = ?
+        ''', (card.card_id,))
+        row = cursor.fetchone()
+        
+        wl_count = row[0] if row else 0
+        g_b_played = row[1] if row else 0
+        g_b_won = row[2] if row else 0
+        g_r_played = row[3] if row else 0
+        g_r_won = row[4] if row else 0
+
+        # Wishlist State (for button)
+        cursor.execute('SELECT 1 FROM wishlists WHERE user_id = ? AND card_id = ?', (self.user.id, card.card_id))
+        is_wishlisted = cursor.fetchone() is not None
+        
+        conn.close()
+
+        owned_by_user = "Yes" if inventory_entry else "No"
+        win_rate = f"{(g_b_won / g_b_played * 100):.1f}%" if g_b_played > 0 else "0%"
+
+        # 3. Build the New Embed Style
+        embed = discord.Embed(title=f"**{card.name}**", color=discord.Color.blue())
+        
+        embed.add_field(name="Info", value=f"🆔 {card.card_id}\n💎 {card.card_rarity}\n🏆 {card.card_type}", inline=True)
+        embed.add_field(name="Base Stats", value=f"⭐ **{card.overall}** | ⚔️ {card.attack} | 🛡️ {card.defense} | ⚡ {card.speed}", inline=True)
+        
+        meta_stats = (
+            f"❤️ **{wl_count}** Wishlists\n"
+            f"⚔️ **Battles:** {g_b_won}/{g_b_played} ({win_rate})\n"
+            f"🔄 **Rounds:** {g_r_won}/{g_r_played}"
+        )
+        embed.add_field(name="Global Statistics", value=meta_stats, inline=False)
+        
+        if owned_by_user == "Yes":
+            trade_count = inventory_entry[0]
+            ownership = "First Owner" if trade_count == 0 else "Traded In"
+            embed.add_field(name="Your Inventory", value=f"✅ Owned ({ownership})", inline=True)
+
         embed.set_footer(text=f"Requested by {self.user.name}", icon_url=self.user.display_avatar.url)
 
-        await interaction.response.send_message(embed=embed, file=discord.File(selected_card.image_path))
-        logger.info(f'{self.user.name} viewed card {selected_card.name} (ID: {selected_card.card_id})')
+        # 4. Create View with Button
+        # We use self.ctx from init. If not available, we can rely on interaction.user check inside button
+        view = CardDetailsView(self.ctx, card.card_id, is_wishlisted)
 
-class ViewCardSelectView(View):
-    def __init__(self, cards, user):
+        # 5. Send/Edit Message
+        # Since we are replying to the dropdown interaction, we use response.send_message
+        # We attach the file and the view.
+        await interaction.response.send_message(embed=embed, file=discord.File(card.image_path), view=view)
+        logger.info(f'{self.user.name} viewed card {card.name} (ID: {card.card_id}) via selection')
+
+class ViewCardSelectView(discord.ui.View):
+    def __init__(self, cards, user, ctx):
         super().__init__(timeout=60)
-        self.add_item(ViewCardSelect(cards, user))
+        # Pass ctx here ----------------v
+        self.add_item(ViewCardSelect(cards, user, ctx))
 
 
 class ToggleWishlistButton(discord.ui.Button):
@@ -1434,8 +1480,10 @@ async def view(ctx, *, identifier: str):
             await ctx.send(embed=embed, file=discord.File(card.image_path), view=view)
             
             logger.info(f'{ctx.author.name} viewed card {card.name}')
+        # ... inside 'view' command ...
         else:
-            view = ViewCardSelectView(cards, ctx.author)
+            # Pass ctx here ----------------------v
+            view = ViewCardSelectView(cards, ctx.author, ctx)
             await ctx.send("Multiple cards found, please select one:", view=view)
     else:
         await ctx.send(f'No card found with the identifier {identifier}')
