@@ -2125,27 +2125,41 @@ class SortSelect(discord.ui.Select):
             discord.SelectOption(label="Sort by Pace", value="speed", emoji="⚡"),
             discord.SelectOption(label="Sort by Attack", value="attack", emoji="⚔️"),
             discord.SelectOption(label="Sort by Defense", value="defense", emoji="🛡️"),
-            discord.SelectOption(label="Sort by Rarity", value="rarity", emoji="💎")
+            discord.SelectOption(label="Sort by Rarity", value="rarity", emoji="💎"),
+            # --- NEW OPTION ---
+            discord.SelectOption(label="Sort by Popularity", value="popularity", emoji="❤️")
         ]
-        # ROW 0
-        super().__init__(placeholder="Sort Inventory...", min_values=1, max_values=1, options=options, row=0)
+        super().__init__(placeholder="Sort items...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         sort_key = self.values[0]
-        
-        labels = {"overall": "Overall", "speed": "Pace", "attack": "Attack", "defense": "Defense", "rarity": "Rarity"}
+
+        labels = {
+            "overall": "Overall", "speed": "Pace", "attack": "Attack",
+            "defense": "Defense", "rarity": "Rarity", "popularity": "Popularity"
+        }
         view.sort_label = labels.get(sort_key, "Overall")
 
-        if sort_key == "overall": view.data.sort(key=lambda x: x[0].overall, reverse=True)
-        elif sort_key == "speed": view.data.sort(key=lambda x: x[0].speed, reverse=True)
-        elif sort_key == "attack": view.data.sort(key=lambda x: x[0].attack, reverse=True)
-        elif sort_key == "defense": view.data.sort(key=lambda x: x[0].defense, reverse=True)
-        elif sort_key == "rarity": view.data.sort(key=lambda x: x[0].copies, reverse=False)
+        # Sorting Logic
+        if sort_key == "overall":
+            view.data.sort(key=lambda x: x[0].overall, reverse=True)
+        elif sort_key == "speed":
+            view.data.sort(key=lambda x: x[0].speed, reverse=True)
+        elif sort_key == "attack":
+            view.data.sort(key=lambda x: x[0].attack, reverse=True)
+        elif sort_key == "defense":
+            view.data.sort(key=lambda x: x[0].defense, reverse=True)
+        elif sort_key == "rarity":
+            view.data.sort(key=lambda x: x[0].copies, reverse=False)
+        elif sort_key == "popularity":
+            # Sort by wishlist_count (Highest first)
+            view.data.sort(key=lambda x: x[0].wishlist_count, reverse=True)
 
         view.current_page = 0
         embed = view.update_view()
         view.update_buttons()
+        
         await interaction.response.edit_message(embed=embed, view=view)
 
 class FilterModal(discord.ui.Modal, title="Filter Inventory"):
@@ -2256,7 +2270,6 @@ class InventoryView(discord.ui.View):
         self.ctx = ctx
         self.current_page = 0
         
-        # Filters
         self.sort_label = "Overall"
         self.filter_name = None
         self.filter_rating = None
@@ -2266,8 +2279,7 @@ class InventoryView(discord.ui.View):
         self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
         self.data.sort(key=lambda x: x[0].overall, reverse=True)
         
-        # Initialize UI
-        self.add_item(SortSelect()) # Row 0
+        self.add_item(SortSelect())
         self.update_buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -2278,7 +2290,6 @@ class InventoryView(discord.ui.View):
 
     def apply_filters(self):
         filtered = self.full_data[:]
-
         if self.filter_name:
             filtered = [x for x in filtered if self.filter_name in x[0].name.lower()]
         if self.filter_rating:
@@ -2299,8 +2310,17 @@ class InventoryView(discord.ui.View):
 
         card_descriptions = []
         for card, edition in page_items:
-            # --- RESTORED ORIGINAL LONG FORMAT ---
-            line = f"**{card.name} (ID: {card.card_id})** - Edition: {edition}, Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}"
+            # --- FORMAT CHANGE: Wishlists placed BEFORE Edition ---
+            line = (
+                f"**{card.name} (ID: {card.card_id})** - "
+                f"❤️ {card.wishlist_count}, "
+                f"Edition: {edition}, "
+                f"Overall: {card.overall}, "
+                f"Attack: {card.attack}, "
+                f"Defense: {card.defense}, "
+                f"Speed: {card.speed}, "
+                f"Type: {card.card_type}"
+            )
             card_descriptions.append(line)
 
         description = '\n'.join(card_descriptions) if card_descriptions else "No cards found matching your filters."
@@ -2320,15 +2340,8 @@ class InventoryView(discord.ui.View):
         return embed
 
     def update_buttons(self):
-        # Clear buttons (keep dropdown at index 0)
         while len(self.children) > 1:
             self.remove_item(self.children[1])
-
-        # Add all buttons to Row 1 in logical order:
-        # [Previous] [Filter] [Reset?] [Next]
-        
-        if self.current_page > 0:
-            self.add_item(PreviousButton())
 
         self.add_item(FilterButton())
         
@@ -2336,6 +2349,9 @@ class InventoryView(discord.ui.View):
         if is_filtered:
             self.add_item(ResetFilterButton())
 
+        if self.current_page > 0:
+            self.add_item(PreviousButton())
+        
         if self.current_page < self.total_pages - 1:
             self.add_item(NextButton())
 
@@ -4119,13 +4135,11 @@ def add_loser_coins(user_id):
 class CatalogView(discord.ui.View):
     def __init__(self, cards, ctx):
         super().__init__(timeout=120)
-        # Zip with None since we don't have specific edition numbers for a catalog
         self.full_data = [(card, None) for card in cards]
         self.data = self.full_data[:] 
         self.ctx = ctx
         self.current_page = 0
         
-        # Filters
         self.sort_label = "Overall"
         self.filter_name = None
         self.filter_rating = None
@@ -4133,11 +4147,8 @@ class CatalogView(discord.ui.View):
         self.filter_type = None
         
         self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
-        
-        # Initial Sort: Overall
         self.data.sort(key=lambda x: x[0].overall, reverse=True)
         
-        # Add UI Elements (Row 0 Dropdown)
         self.add_item(SortSelect()) 
         self.update_buttons()
 
@@ -4149,7 +4160,6 @@ class CatalogView(discord.ui.View):
 
     def apply_filters(self):
         filtered = self.full_data[:]
-
         if self.filter_name:
             filtered = [x for x in filtered if self.filter_name in x[0].name.lower()]
         if self.filter_rating:
@@ -4170,14 +4180,21 @@ class CatalogView(discord.ui.View):
 
         card_descriptions = []
         for card, _ in page_items:
-            # --- MODIFIED CATALOG FORMAT ---
-            # Removed 'Edition', Added 'Type' at the end
-            line = f"**{card.name} (ID: {card.card_id})** - Overall: {card.overall}, Copies: {card.copies}, Attack: {card.attack}, Defense: {card.defense}, Speed: {card.speed}, Type: {card.card_type}"
+            # --- FORMAT CHANGE: Wishlists (Emoji) replaces Edition ---
+            line = (
+                f"**{card.name} (ID: {card.card_id})** - "
+                f"❤️ {card.wishlist_count}, "
+                f"Overall: {card.overall}, "
+                f"Attack: {card.attack}, "
+                f"Defense: {card.defense}, "
+                f"Speed: {card.speed}, "
+                f"Total Copies: {card.copies}, "
+                f"Type: {card.card_type}"
+            )
             card_descriptions.append(line)
 
         description = '\n'.join(card_descriptions) if card_descriptions else "No cards found matching your filters."
 
-        # Build Status Title
         status = [f"Sort: {self.sort_label}"]
         if self.filter_name: status.append(f"Name: {self.filter_name}")
         if self.filter_rating: status.append(f"OVR>={self.filter_rating}")
@@ -4193,24 +4210,20 @@ class CatalogView(discord.ui.View):
         return embed
 
     def update_buttons(self):
-        # Clear buttons (keep dropdown at index 0)
         while len(self.children) > 1:
             self.remove_item(self.children[1])
 
-        # Row 1: Filter & Reset
         self.add_item(FilterButton())
         
         is_filtered = (len(self.data) != len(self.full_data))
         if is_filtered:
             self.add_item(ResetFilterButton())
 
-        # Row 2: Navigation
         if self.current_page > 0:
             self.add_item(PreviousButton())
         
         if self.current_page < self.total_pages - 1:
             self.add_item(NextButton())
-
 
 @bot.hybrid_command(name='catalog', description="View every card available in the game")
 async def catalog(ctx, *, search: str = None):
