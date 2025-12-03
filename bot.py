@@ -324,7 +324,7 @@ async def help_command(ctx):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.3.10"
+BOT_VERSION = "1.4.0"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 CHANGELOG = ['''1.0.0 - Initial realease 
@@ -347,7 +347,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.7- Beauty Enhancements
 1.3.8- Global & Server Leaderboards
 1.3.9- Lookup Command Added
-1.3.10- Lookup Mint Card Image Generation''']
+1.3.10- Lookup Mint Card Image Generation
+1.4.0- Wishlist System Added''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -4341,7 +4342,6 @@ async def wishlist(ctx, card_id: int):
         if exists:
             # REMOVE
             cursor.execute('DELETE FROM wishlists WHERE user_id = ? AND card_id = ?', (ctx.author.id, card_id))
-            # Decrement global count (don't go below 0)
             cursor.execute('UPDATE cards SET wishlist_count = MAX(0, wishlist_count - 1) WHERE card_id = ?', (card_id,))
             action_text = "removed from"
             emoji = "💔"
@@ -4349,7 +4349,6 @@ async def wishlist(ctx, card_id: int):
         else:
             # ADD
             cursor.execute('INSERT INTO wishlists (user_id, card_id) VALUES (?, ?)', (ctx.author.id, card_id))
-            # Increment global count
             cursor.execute('UPDATE cards SET wishlist_count = wishlist_count + 1 WHERE card_id = ?', (card_id,))
             action_text = "added to"
             emoji = "❤️"
@@ -4365,7 +4364,10 @@ async def wishlist(ctx, card_id: int):
             description=f"{emoji} **{card.name}** has been {action_text} your wishlist.\nGlobal Wishlists: **{new_count}**",
             color=color
         )
-        embed.set_thumbnail(url=f"attachment://{card.image_path.split('/')[-1]}")
+        
+        # --- FIX: Changed set_thumbnail to set_image ---
+        # This moves the image from the top-right corner to the bottom (Full Width)
+        embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
         
         await ctx.send(embed=embed, file=discord.File(card.image_path))
 
@@ -4374,7 +4376,6 @@ async def wishlist(ctx, card_id: int):
         await ctx.send("An error occurred updating your wishlist.")
     finally:
         conn.close()
-
 
 
 #-----------------------------------ADMIN COMMANDS----------------------------------
