@@ -128,17 +128,38 @@ def migrate_db():
         conn = sqlite3.connect('cards_game.db')
         cursor = conn.cursor()
         
-        # Check if columns exist, if not, add them
+        # Check existing columns to avoid errors
         cursor.execute("PRAGMA table_info(players)")
-        columns = [info[1] for info in cursor.fetchall()]
-        
-        if 'rounds_drawn' not in columns:
-            print("Migrating DB: Adding rounds_drawn column...")
+        player_columns = [info[1] for info in cursor.fetchall()]
+        if 'rounds_drawn' not in player_columns:
             cursor.execute("ALTER TABLE players ADD COLUMN rounds_drawn INTEGER DEFAULT 0")
-            
-        if 'battles_drawn' not in columns:
-            print("Migrating DB: Adding battles_drawn column...")
+        if 'battles_drawn' not in player_columns:
             cursor.execute("ALTER TABLE players ADD COLUMN battles_drawn INTEGER DEFAULT 0")
+
+        cursor.execute("PRAGMA table_info(inventories)")
+        inv_columns = [info[1] for info in cursor.fetchall()]
+        if 'trade_count' not in inv_columns:
+            cursor.execute("ALTER TABLE inventories ADD COLUMN trade_count INTEGER DEFAULT 0")
+
+        # --- NEW: Wishlist Updates ---
+        cursor.execute("PRAGMA table_info(cards)")
+        card_columns = [info[1] for info in cursor.fetchall()]
+        
+        # 1. Add count column to cards for fast viewing
+        if 'wishlist_count' not in card_columns:
+            print("Migrating DB: Adding wishlist_count to cards...")
+            cursor.execute("ALTER TABLE cards ADD COLUMN wishlist_count INTEGER DEFAULT 0")
+
+        # 2. Create the connection table
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS wishlists (
+            user_id INTEGER,
+            card_id INTEGER,
+            PRIMARY KEY (user_id, card_id),
+            FOREIGN KEY(user_id) REFERENCES players(user_id),
+            FOREIGN KEY(card_id) REFERENCES cards(card_id)
+        )
+        ''')
             
         conn.commit()
         conn.close()
@@ -868,7 +889,8 @@ async def facts(ctx):
 
 
 class Card:
-    def __init__(self, card_id, player_id, name, attack, defense, speed, height, club, position, overall, image_path, card_rarity=None, card_type='standard', league=None, nation=None, copies=0):
+    # Added 'wishlist_count' and '*args' to the end of the argument list
+    def __init__(self, card_id, player_id, name, attack, defense, speed, height, club, position, overall, image_path, card_rarity=None, card_type='standard', league=None, nation=None, copies=0, wishlist_count=0, *args):
         self.card_id = card_id
         self.player_id = player_id
         self.name = name
@@ -885,6 +907,7 @@ class Card:
         self.league = league
         self.nation = nation
         self.copies = copies
+        self.wishlist_count = wishlist_count
 
 
 class Player:
@@ -1253,6 +1276,13 @@ async def view(ctx, *, identifier: str):
             # Check if the user owns the card
             conn = sqlite3.connect('cards_game.db')
             cursor = conn.cursor()
+
+
+            cursor.execute('SELECT wishlist_count FROM cards WHERE card_id = ?', (card.card_id,))
+            wl_count_row = cursor.fetchone()
+            wl_count = wl_count_row[0] if wl_count_row else 0
+
+
             cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
             inventory_entry = cursor.fetchone()
             conn.close()
@@ -1263,6 +1293,7 @@ async def view(ctx, *, identifier: str):
             embed.add_field(name="ID", value=card.card_id, inline=True)
             embed.add_field(name="Rarity", value=card.card_rarity, inline=True)
             embed.add_field(name="Type", value=card.card_type, inline=True)
+            embed.add_field(name="Popularity", value=f"❤️ {wl_count} Wishlists", inline=True)
             embed.add_field(name="Attack", value=card.attack, inline=True)
             embed.add_field(name="Defense", value=card.defense, inline=True)
             embed.add_field(name="Speed", value=card.speed, inline=True)
@@ -4106,6 +4137,143 @@ async def catalog(ctx, *, search: str = None):
     embed = view.update_view()
     view.update_buttons() # Ensure Reset button appears if filtered
     view.message = await ctx.send(embed=embed, view=view)
+
+
+#-----------------------------------WISHLIST----------------------------------
+
+
+class WishlistView(discord.ui.View):
+    def __init__(self, data, target_user, ctx):
+        super().__init__(timeout=120)
+        self.data = data
+        self.target_user = target_user
+        self.ctx = ctx
+        self.current_page = 0
+        self.total_pages = max(1, (len(self.data) - 1) // 10 + 1)
+        self.update_buttons()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("⛔ You cannot control this menu.", ephemeral=True)
+            return False
+        return True
+
+    def update_view(self):
+        start = self.current_page * 10
+        end = start + 10
+        page_items = self.data[start:end]
+
+        descriptions = []
+        for card in page_items:
+            # Row Format: Name (ID) | Type | Overall
+            # row[0]=Name, row[1]=ID, row[2]=Overall, row[3]=Type (Swapped from Rarity)
+            line = f"**{card[0]}** (ID: {card[1]}) | {card[3]} | ⭐ {card[2]}"
+            descriptions.append(line)
+
+        description = '\n'.join(descriptions) if descriptions else "List is empty."
+
+        embed = discord.Embed(
+            title=f"❤️ {self.target_user.name}'s Wishlist", 
+            description=description, 
+            color=discord.Color.magenta()
+        )
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} | Total: {len(self.data)} Cards")
+        return embed
+
+    def update_buttons(self):
+        self.clear_items()
+        if self.current_page > 0:
+            self.add_item(PreviousButton())
+        
+        if self.current_page < self.total_pages - 1:
+            self.add_item(NextButton())
+
+
+@bot.hybrid_command(name='wishlists', description="View a player's wishlist")
+async def wishlists(ctx, user: discord.User = None):
+    target_user = user or ctx.author
+    ensure_player_exists(target_user.id, target_user.name)
+
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    
+    # --- FIX: Changed c.card_rarity to c.card_type ---
+    cursor.execute('''
+        SELECT c.name, c.card_id, c.overall, c.card_type 
+        FROM wishlists w
+        JOIN cards c ON w.card_id = c.card_id
+        WHERE w.user_id = ?
+        ORDER BY c.overall DESC
+    ''', (target_user.id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        msg = "You have no cards in your wishlist." if target_user == ctx.author else f"**{target_user.name}** has no cards in their wishlist."
+        return await ctx.send(msg)
+
+    view = WishlistView(rows, target_user, ctx)
+    embed = view.update_view()
+    await ctx.send(embed=embed, view=view)
+
+
+
+@bot.hybrid_command(name='wishlist', aliases=['wl'], description="Add or remove a card from your wishlist")
+async def wishlist(ctx, card_id: int):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    
+    card = get_card_by_id(card_id)
+    if not card:
+        return await ctx.send(f"❌ Card ID `{card_id}` not found.")
+
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+
+    try:
+        # Check if already wishlisted
+        cursor.execute('SELECT 1 FROM wishlists WHERE user_id = ? AND card_id = ?', (ctx.author.id, card_id))
+        exists = cursor.fetchone()
+
+        if exists:
+            # REMOVE
+            cursor.execute('DELETE FROM wishlists WHERE user_id = ? AND card_id = ?', (ctx.author.id, card_id))
+            # Decrement global count (don't go below 0)
+            cursor.execute('UPDATE cards SET wishlist_count = MAX(0, wishlist_count - 1) WHERE card_id = ?', (card_id,))
+            action_text = "removed from"
+            emoji = "💔"
+            color = discord.Color.red()
+        else:
+            # ADD
+            cursor.execute('INSERT INTO wishlists (user_id, card_id) VALUES (?, ?)', (ctx.author.id, card_id))
+            # Increment global count
+            cursor.execute('UPDATE cards SET wishlist_count = wishlist_count + 1 WHERE card_id = ?', (card_id,))
+            action_text = "added to"
+            emoji = "❤️"
+            color = discord.Color.magenta()
+
+        conn.commit()
+        
+        # Get updated count
+        cursor.execute('SELECT wishlist_count FROM cards WHERE card_id = ?', (card_id,))
+        new_count = cursor.fetchone()[0]
+
+        embed = discord.Embed(
+            description=f"{emoji} **{card.name}** has been {action_text} your wishlist.\nGlobal Wishlists: **{new_count}**",
+            color=color
+        )
+        embed.set_thumbnail(url=f"attachment://{card.image_path.split('/')[-1]}")
+        
+        await ctx.send(embed=embed, file=discord.File(card.image_path))
+
+    except Exception as e:
+        logger.error(f"Wishlist Error: {e}")
+        await ctx.send("An error occurred updating your wishlist.")
+    finally:
+        conn.close()
+
+
+
 #-----------------------------------ADMIN COMMANDS----------------------------------
 
 @bot.command(name='give_coins')
