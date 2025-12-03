@@ -1303,30 +1303,42 @@ def generate_minted_card(card_path, avatar_bytes, owner_name, edition_text):
         card_w, card_h = card_img.size
         draw = ImageDraw.Draw(card_img)
 
+        # --- DYNAMIC SCALING MATH ---
+        # We base everything on the card's width to ensure readability
+        # Example: On a 1000px card, font will be 45px. On a 2000px card, it becomes 90px.
+        scale_factor = card_w / 1000 
+        
+        font_size_main = int(45 * scale_factor) # Base size 45
+        pfp_size = int(90 * scale_factor)       # Base size 90
+        padding = int(20 * scale_factor)        # Padding 20
+        edge_margin = int(30 * scale_factor)    # Margin from edge 30
+        border_width = int(3 * scale_factor)    # Border thickness
+        corner_radius = int(25 * scale_factor)  # Pill roundness
+
+        # Ensure minimum visible sizes for very small cards
+        font_size_main = max(20, font_size_main)
+        pfp_size = max(40, pfp_size)
+
         # --- Setup Fonts ---
         try:
-            font_owner = ImageFont.truetype("arialbd.ttf", 26)
-            font_edition = ImageFont.truetype("arialbd.ttf", 28)
+            font_owner = ImageFont.truetype("arialbd.ttf", font_size_main)
+            font_edition = ImageFont.truetype("arialbd.ttf", font_size_main)
         except:
             font_owner = ImageFont.load_default()
             font_edition = ImageFont.load_default()
 
-        # Layout Settings
-        edge_padding = 20
-        
         # ==============================================================================
         # LEFT BOTTOM: OWNER TAG (PFP + Name)
         # ==============================================================================
-        pfp_size = 40
-        inner_padding = 10
-
+        
         # Calculate text dimensions
         owner_bbox = draw.textbbox((0, 0), owner_name, font=font_owner)
         owner_text_w = owner_bbox[2] - owner_bbox[0]
+        owner_text_h = owner_bbox[3] - owner_bbox[1]
         
         # Pill Dimensions
-        owner_pill_w = pfp_size + owner_text_w + (inner_padding * 3)
-        owner_pill_h = pfp_size + inner_padding
+        owner_pill_w = pfp_size + owner_text_w + (padding * 3)
+        owner_pill_h = pfp_size + padding
 
         # Create Pill
         owner_pill = Image.new("RGBA", (owner_pill_w, owner_pill_h), (0, 0, 0, 0))
@@ -1335,9 +1347,10 @@ def generate_minted_card(card_path, avatar_bytes, owner_name, edition_text):
         # Draw Background
         pill_draw.rounded_rectangle(
             [(0, 0), (owner_pill_w, owner_pill_h)],
-            radius=owner_pill_h // 2,
-            fill=(20, 20, 20, 230),
-            outline=(255, 255, 255, 100), width=1
+            radius=corner_radius,
+            fill=(20, 20, 20, 245), # Very dark background for contrast
+            outline=(255, 255, 255, 150), 
+            width=max(1, int(border_width/2))
         )
 
         # Paste Avatar
@@ -1350,15 +1363,18 @@ def generate_minted_card(card_path, avatar_bytes, owner_name, edition_text):
             circular_avatar = ImageOps.fit(avatar_img, mask.size, centering=(0.5, 0.5))
             circular_avatar.putalpha(mask)
             
-            owner_pill.paste(circular_avatar, (inner_padding//2, inner_padding//2), circular_avatar)
+            # Vertically center PFP in pill
+            pfp_y = (owner_pill_h - pfp_size) // 2
+            owner_pill.paste(circular_avatar, (padding, pfp_y), circular_avatar)
 
         # Draw Name
-        text_x = pfp_size + inner_padding
-        text_y = (owner_pill_h - (owner_bbox[3] - owner_bbox[1])) // 2 - 4
+        text_x = padding * 2 + pfp_size
+        # Vertically center text
+        text_y = (owner_pill_h - owner_text_h) // 2 - int(5 * scale_factor)
         pill_draw.text((text_x, text_y), owner_name, font=font_owner, fill="white")
 
         # Paste onto Card (Bottom Left)
-        card_img.paste(owner_pill, (edge_padding, card_h - owner_pill_h - edge_padding), owner_pill)
+        card_img.paste(owner_pill, (edge_margin, card_h - owner_pill_h - edge_margin), owner_pill)
 
 
         # ==============================================================================
@@ -1368,8 +1384,8 @@ def generate_minted_card(card_path, avatar_bytes, owner_name, edition_text):
         ed_w = ed_bbox[2] - ed_bbox[0]
         ed_h = ed_bbox[3] - ed_bbox[1]
 
-        plate_w = ed_w + 40
-        plate_h = owner_pill_h 
+        plate_w = ed_w + (padding * 4)
+        plate_h = owner_pill_h # Match height of owner pill for symmetry
 
         # Create Plate
         plate_img = Image.new("RGBA", (plate_w, plate_h), (0, 0, 0, 0))
@@ -1377,24 +1393,24 @@ def generate_minted_card(card_path, avatar_bytes, owner_name, edition_text):
 
         gold_border = (218, 165, 32, 255)
         gold_text = (255, 223, 0, 255)
-        dark_fill = (30, 30, 30, 230)
+        dark_fill = (30, 30, 30, 245)
 
         # Draw Background
         plate_draw.rounded_rectangle(
             [(0, 0), (plate_w, plate_h)],
-            radius=10,
+            radius=corner_radius,
             fill=dark_fill,
             outline=gold_border,
-            width=2
+            width=border_width
         )
 
         # Draw Text
         text_pos_x = (plate_w - ed_w) // 2
-        text_pos_y = (plate_h - ed_h) // 2 - 4
+        text_pos_y = (plate_h - ed_h) // 2 - int(5 * scale_factor)
         plate_draw.text((text_pos_x, text_pos_y), edition_text, font=font_edition, fill=gold_text)
 
         # Paste onto Card (Bottom Right)
-        card_img.paste(plate_img, (card_w - plate_w - edge_padding, card_h - plate_h - edge_padding), plate_img)
+        card_img.paste(plate_img, (card_w - plate_w - edge_margin, card_h - plate_h - edge_margin), plate_img)
 
         # --- Finalize ---
         buffer = io.BytesIO()
