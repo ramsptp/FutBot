@@ -2931,6 +2931,8 @@ class Battle:
         view = SetupView(self)
         self.message = await self.ctx.send(embed=embed, view=view)
 
+
+    
     # --- SURRENDER LOGIC ---
     async def request_surrender(self, interaction):
         if interaction.user.id not in [self.player1.id, self.player2.id]:
@@ -2939,17 +2941,29 @@ class Battle:
         view = SurrenderConfirmView(self, interaction.user)
         await interaction.response.send_message("Are you sure you want to surrender? This will count as a loss.", view=view, ephemeral=True)
 
+    
     async def confirm_surrender(self, interaction, loser):
         winner = self.player1 if loser == self.player2 else self.player2
         
-        # Update Stats
-        cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_won = battles_won + 1 WHERE user_id = ?', (winner.id,))
-        cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_lost = battles_lost + 1 WHERE user_id = ?', (loser.id,))
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
         
-        add_winner_coins(winner.id)
-        add_loser_coins(loser.id)
-        conn.commit()
+        try:
+            # Update Stats
+            cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_won = battles_won + 1 WHERE user_id = ?', (winner.id,))
+            cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_lost = battles_lost + 1 WHERE user_id = ?', (loser.id,))
+            
+            # Update Coins (Directly, to avoid helper function locks)
+            cursor.execute('UPDATE players SET coins = coins + 200 WHERE user_id = ?', (winner.id,))
+            cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (loser.id,))
+            
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Surrender DB Error: {e}")
+        finally:
+            conn.close()
         
+        # Check achievements (Safe to do after DB close)
         await self.check_achievements(winner.id, 'battles_won', interaction)
 
         embed = discord.Embed(title="🏳️ Battle Surrendered", color=discord.Color.red())
@@ -2957,7 +2971,151 @@ class Battle:
         embed.add_field(name="Rewards", value=f"{winner.name}: +200 Coins\n{loser.name}: +100 Coins", inline=False)
         
         await self.message.edit(embed=embed, view=None)
-        await interaction.response.edit_message(content="🏳️ You surrendered.", view=None)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(content="🏳️ You surrendered.", view=None)
+        except:
+            pass
+
+    # 2. DRAW LOGIC (Fixed DB Locking)
+    async def confirm_draw(self, interaction):
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        
+        try:
+            # Update Stats
+            cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
+            cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
+            
+            # Update Coins
+            cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player1.id,))
+            cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player2.id,))
+            
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Draw DB Error: {e}")
+        finally:
+            conn.close()
+
+        embed = discord.Embed(title="🤝 Battle Drawn", description="Both players agreed to a mutual draw.", color=discord.Color.greyple())
+        embed.add_field(name="Rewards", value="Both players received +100 Coins", inline=False)
+        
+        await self.message.edit(embed=embed, view=None)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except:
+            pass
+
+    # 3. ROUND UPDATE LOGIC (Fixed DB Locking)
+    def update_round_db_stats(self, winner):
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+
+        try:
+            # Update Player Stats
+            cursor.execute('UPDATE players SET rounds_played = rounds_played + 1 WHERE user_id = ?', (self.player1.id,))
+            cursor.execute('UPDATE players SET rounds_played = rounds_played + 1 WHERE user_id = ?', (self.player2.id,))
+            
+            if winner:
+                loser = self.player2 if winner == self.player1 else self.player1
+                cursor.execute('UPDATE players SET rounds_won = rounds_won + 1 WHERE user_id = ?', (winner.id,))
+                cursor.execute('UPDATE players SET rounds_lost = rounds_lost + 1 WHERE user_id = ?', (loser.id,))
+            else:
+                cursor.execute('UPDATE players SET rounds_drawn = rounds_drawn + 1 WHERE user_id = ?', (self.player1.id,))
+                cursor.execute('UPDATE players SET rounds_drawn = rounds_drawn + 1 WHERE user_id = ?', (self.player2.id,))
+
+            # Update Card Stats (Rounds)
+            for card, user in [(self.p1_card, self.player1), (self.p2_card, self.player2)]:
+                cursor.execute('UPDATE inventories SET rounds_played = rounds_played + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
+                cursor.execute('UPDATE cards SET total_rounds_played = total_rounds_played + 1 WHERE card_id = ?', (card.card_id,))
+
+            if winner:
+                winning_card = self.p1_card if winner == self.player1 else self.p2_card
+                cursor.execute('UPDATE inventories SET rounds_won = rounds_won + 1 WHERE card_id = ? AND user_id = ?', (winning_card.card_id, winner.id))
+                cursor.execute('UPDATE cards SET total_rounds_won = total_rounds_won + 1 WHERE card_id = ?', (winning_card.card_id,))
+
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Round Update DB Error: {e}")
+        finally:
+            conn.close()
+
+    # 4. END GAME LOGIC (Fixed DB Locking + Card Stats)
+    async def end_game(self, interaction, last_round_embed):
+        winner, loser, is_draw = None, None, False
+        if self.player1_wins > self.player2_wins:
+            winner, loser = self.player1, self.player2
+        elif self.player2_wins > self.player1_wins:
+            winner, loser = self.player2, self.player1
+        else:
+            is_draw = True
+
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player1.id,))
+            cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player2.id,))
+
+            # Helper to update deck stats (Battles)
+            def update_deck_stats(deck, user, won_battle):
+                for card in deck:
+                    # Update Inventory Copy
+                    cursor.execute('UPDATE inventories SET battles_played = battles_played + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
+                    # Update Global Card
+                    cursor.execute('UPDATE cards SET total_battles_played = total_battles_played + 1 WHERE card_id = ?', (card.card_id,))
+                    
+                    if won_battle:
+                        cursor.execute('UPDATE inventories SET battles_won = battles_won + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
+                        cursor.execute('UPDATE cards SET total_battles_won = total_battles_won + 1 WHERE card_id = ?', (card.card_id,))
+
+            if is_draw:
+                cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
+                cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
+                
+                # Coins
+                cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player1.id,))
+                cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player2.id,))
+                
+                update_deck_stats(self.player1_deck, self.player1, False)
+                update_deck_stats(self.player2_deck, self.player2, False)
+
+                embed = discord.Embed(title="🤝 Battle Drawn 🤝", color=discord.Color.greyple())
+                embed.add_field(name="Result", value="The battle ended in a draw!", inline=False)
+                embed.add_field(name="Rewards", value="Both players received +100 Coins", inline=False)
+            else:
+                cursor.execute('UPDATE players SET battles_won = battles_won + 1 WHERE user_id = ?', (winner.id,))
+                cursor.execute('UPDATE players SET battles_lost = battles_lost + 1 WHERE user_id = ?', (loser.id,))
+                
+                # Coins
+                cursor.execute('UPDATE players SET coins = coins + 200 WHERE user_id = ?', (winner.id,))
+                cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (loser.id,))
+                
+                update_deck_stats(self.player1_deck, self.player1, (winner == self.player1))
+                update_deck_stats(self.player2_deck, self.player2, (winner == self.player2))
+
+                embed = discord.Embed(title="🏆 Battle Finished 🏆", color=discord.Color.gold())
+                embed.add_field(name="Winner", value=f"**{winner.name}**", inline=False)
+                embed.add_field(name="Rewards", value=f"{winner.name}: +200 Coins\n{loser.name}: +100 Coins", inline=False)
+            
+            conn.commit()
+        except Exception as e:
+            logger.error(f"End Game DB Error: {e}")
+        finally:
+            conn.close()
+
+        # Handle Achievements after DB is closed
+        if not is_draw:
+            await self.check_achievements(winner.id, 'battles_won', interaction)
+
+        embed.add_field(name="Final Score", value=f"{self.player1.name}: {self.player1_wins} | {self.player2.name}: {self.player2_wins} | Draws: {self.draws}", inline=False)
+        if last_round_embed:
+             embed.add_field(name="Last Round", value=last_round_embed.description, inline=False)
+
+        await self.message.edit(embed=embed, view=None)
+
+    
 
     # --- DRAW LOGIC ---
     async def request_draw(self, interaction):
@@ -2982,24 +3140,7 @@ class Battle:
         # Refresh the current view to update button color/text
         await self.update_game_state()
 
-    async def confirm_draw(self, interaction):
-        cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
-        cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
-        
-        add_loser_coins(self.player1.id)
-        add_loser_coins(self.player2.id)
-        conn.commit()
-
-        embed = discord.Embed(title="🤝 Battle Drawn", description="Both players agreed to a mutual draw.", color=discord.Color.greyple())
-        embed.add_field(name="Rewards", value="Both players received +100 Coins", inline=False)
-        
-        await self.message.edit(embed=embed, view=None)
-        # Handle the interaction response if it came from a button click
-        try:
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-        except:
-            pass
+    
 
     def get_valid_deck(self, player):
         full_deck = self.player1_deck if player.id == self.player1.id else self.player2_deck
@@ -3107,100 +3248,9 @@ class Battle:
                 self.draws += 1
                 return f"🤝 **It's a Draw!** Both stats and overall are equal!", None
 
-    def update_round_db_stats(self, winner):
-        conn = sqlite3.connect('cards_game.db')
-        cursor = conn.cursor()
+    
 
-        # Update Player Stats
-        cursor.execute('UPDATE players SET rounds_played = rounds_played + 1 WHERE user_id = ?', (self.player1.id,))
-        cursor.execute('UPDATE players SET rounds_played = rounds_played + 1 WHERE user_id = ?', (self.player2.id,))
-        
-        if winner:
-            loser = self.player2 if winner == self.player1 else self.player1
-            cursor.execute('UPDATE players SET rounds_won = rounds_won + 1 WHERE user_id = ?', (winner.id,))
-            cursor.execute('UPDATE players SET rounds_lost = rounds_lost + 1 WHERE user_id = ?', (loser.id,))
-        else:
-            cursor.execute('UPDATE players SET rounds_drawn = rounds_drawn + 1 WHERE user_id = ?', (self.player1.id,))
-            cursor.execute('UPDATE players SET rounds_drawn = rounds_drawn + 1 WHERE user_id = ?', (self.player2.id,))
-
-        # Update Card Stats (Rounds)
-        for card, user in [(self.p1_card, self.player1), (self.p2_card, self.player2)]:
-            cursor.execute('UPDATE inventories SET rounds_played = rounds_played + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
-            cursor.execute('UPDATE cards SET total_rounds_played = total_rounds_played + 1 WHERE card_id = ?', (card.card_id,))
-
-        if winner:
-            winning_card = self.p1_card if winner == self.player1 else self.p2_card
-            cursor.execute('UPDATE inventories SET rounds_won = rounds_won + 1 WHERE card_id = ? AND user_id = ?', (winning_card.card_id, winner.id))
-            cursor.execute('UPDATE cards SET total_rounds_won = total_rounds_won + 1 WHERE card_id = ?', (winning_card.card_id,))
-
-        conn.commit()
-        conn.close()
-
-    async def end_game(self, interaction, last_round_embed):
-        winner, loser, is_draw = None, None, False
-        if self.player1_wins > self.player2_wins:
-            winner, loser = self.player1, self.player2
-        elif self.player2_wins > self.player1_wins:
-            winner, loser = self.player2, self.player1
-        else:
-            is_draw = True
-
-        conn = sqlite3.connect('cards_game.db')
-        cursor = conn.cursor()
-
-        cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player1.id,))
-        cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player2.id,))
-
-        # Helper to update deck stats (Battles)
-        def update_deck_stats(deck, user, won_battle):
-            for card in deck:
-                cursor.execute('UPDATE inventories SET battles_played = battles_played + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
-                cursor.execute('UPDATE cards SET total_battles_played = total_battles_played + 1 WHERE card_id = ?', (card.card_id,))
-                
-                if won_battle:
-                    cursor.execute('UPDATE inventories SET battles_won = battles_won + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
-                    cursor.execute('UPDATE cards SET total_battles_won = total_battles_won + 1 WHERE card_id = ?', (card.card_id,))
-
-        if is_draw:
-             cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
-             cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
-             add_loser_coins(self.player1.id)
-             add_loser_coins(self.player2.id)
-             
-             update_deck_stats(self.player1_deck, self.player1, False)
-             update_deck_stats(self.player2_deck, self.player2, False)
-
-             embed = discord.Embed(title="🤝 Battle Drawn 🤝", color=discord.Color.greyple())
-             embed.add_field(name="Result", value="The battle ended in a draw!", inline=False)
-             embed.add_field(name="Rewards", value="Both players received +100 Coins", inline=False)
-        else:
-            cursor.execute('UPDATE players SET battles_won = battles_won + 1 WHERE user_id = ?', (winner.id,))
-            cursor.execute('UPDATE players SET battles_lost = battles_lost + 1 WHERE user_id = ?', (loser.id,))
-            add_winner_coins(winner.id)
-            add_loser_coins(loser.id)
-            await self.check_achievements(winner.id, 'battles_won', interaction)
-            
-            update_deck_stats(self.player1_deck, self.player1, (winner == self.player1))
-            update_deck_stats(self.player2_deck, self.player2, (winner == self.player2))
-
-            embed = discord.Embed(title="🏆 Battle Finished 🏆", color=discord.Color.gold())
-            embed.add_field(name="Winner", value=f"**{winner.name}**", inline=False)
-            embed.add_field(name="Rewards", value=f"{winner.name}: +200 Coins\n{loser.name}: +100 Coins", inline=False)
-        
-        conn.commit()
-        conn.close()
-
-        embed.add_field(name="Final Score", value=f"{self.player1.name}: {self.player1_wins} | {self.player2.name}: {self.player2_wins} | Draws: {self.draws}", inline=False)
-        if last_round_embed:
-             embed.add_field(name="Last Round", value=last_round_embed.description, inline=False)
-
-        # Use self.message to edit because interaction might be stale/from previous step
-        await self.message.edit(embed=embed, view=None)
-
-
-
-
-
+    
     async def check_achievements(self, user_id, stat_type, interaction):
         try:
             conn = sqlite3.connect('cards_game.db')
