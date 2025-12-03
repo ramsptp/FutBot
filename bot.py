@@ -6,7 +6,7 @@ import random
 import asyncio
 import logging
 from fuzzywuzzy import process
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps 
 import io
 import time 
 import os
@@ -210,7 +210,6 @@ async def on_command_error(ctx, error):
     else:
         logger.error(f"Command Error: {error}")
 
-#---------------------------------------------------------HELP-------------------------------------------------------------------------------------
 
 #---------------------------------------------------------HELP-------------------------------------------------------------------------------------
 
@@ -222,8 +221,8 @@ class HelpSelect(discord.ui.Select):
         options = [
             discord.SelectOption(label="Home", description="Back to main menu", emoji="🏠", value="home"),
             discord.SelectOption(label="Battle Arena", description="Combat, Decks, and Tactics", emoji="⚔️", value="battle"),
-            discord.SelectOption(label="Collection", description="Inventory, Catalog, Packs", emoji="🎒", value="collection"),
-            discord.SelectOption(label="Economy & Market", description="Coins, Shop, Trading, Exchange", emoji="💰", value="economy"),
+            discord.SelectOption(label="Collection", description="Inventory, Inspection, Packs", emoji="🎒", value="collection"),
+            discord.SelectOption(label="Economy & Market", description="Coins, Shop, Trading", emoji="💰", value="economy"),
             discord.SelectOption(label="Stats & Rankings", description="Leaderboards and Achievements", emoji="🏆", value="stats"),
             discord.SelectOption(label="Bot Info", description="Version, Changelog, Extras", emoji="ℹ️", value="info")
         ]
@@ -241,17 +240,18 @@ class HelpSelect(discord.ui.Select):
         elif value == "battle":
             embed = discord.Embed(title="⚔️ Battle Arena", color=discord.Color.red())
             embed.add_field(name="`/battle @user`", value="Challenge another player to a 5-round match.", inline=False)
-            embed.add_field(name="`/create_deck [name] [id1]...`", value="Create a battle deck with 5 specific Card IDs.", inline=False)
-            embed.add_field(name="`/edit_deck [name] [id1]...`", value="Modify an existing deck.", inline=False)
+            embed.add_field(name="`/create_deck`", value="Create a battle deck with 5 specific Card IDs.", inline=False)
+            embed.add_field(name="`/edit_deck`", value="Modify an existing deck.", inline=False)
             embed.add_field(name="`/decks`", value="View your list of decks.", inline=False)
             embed.add_field(name="`/view_deck [name]`", value="Visualize your team lineup on the pitch.", inline=False)
             embed.add_field(name="`/battle_logic`", value="Read the rules of combat and stat comparisons.", inline=False)
 
         elif value == "collection":
             embed = discord.Embed(title="🎒 Collection & Items", color=discord.Color.blue())
-            embed.add_field(name="`/inventory`", value="View your owned cards with filters and sorting.", inline=False)
-            embed.add_field(name="`/catalog [search]`", value="View ALL cards in the game database.", inline=False)
-            embed.add_field(name="`/view [name_or_id]`", value="Inspect a specific card's full details and art.", inline=False)
+            embed.add_field(name="`/inventory`", value="View your card collection with filters and sorting.", inline=False)
+            embed.add_field(name="`/lookup [id] (@user)`", value="**NEW!** Generate a custom 'Minted' slab image for a specific card you own (shows Edition #).", inline=False)
+            embed.add_field(name="`/catalog [search]`", value="View ALL cards in the game database (owned or not).", inline=False)
+            embed.add_field(name="`/view [name_or_id]`", value="Inspect a card's base stats and art.", inline=False)
             embed.add_field(name="`/packs`", value="See your unopened card packs.", inline=False)
             embed.add_field(name="`/open [pack_id]`", value="Open a pack to get new players.", inline=False)
             embed.add_field(name="`/weight [name]`", value="Check the drop rarity chance of a card.", inline=False)
@@ -264,7 +264,7 @@ class HelpSelect(discord.ui.Select):
             embed.add_field(name="`/shop`", value="View packs available for purchase.", inline=False)
             embed.add_field(name="`/buy [pack_id]`", value="Purchase a pack using coins.", inline=False)
             embed.add_field(name="`/sell [card_id]`", value="Sell a card back to the system for coins.", inline=False)
-            embed.add_field(name="`/trade [card] @user [card]`", value="Quickly swap one card for another.", inline=False)
+            embed.add_field(name="`/trade`", value="Quickly swap one card for another (1-for-1).", inline=False)
             embed.add_field(name="`/exchange @user`", value="Open the advanced trading table (Cards + Coins).", inline=False)
 
         elif value == "stats":
@@ -272,8 +272,8 @@ class HelpSelect(discord.ui.Select):
             embed.add_field(name="`/stats [@user]`", value="View battle records and win rates.", inline=False)
             embed.add_field(name="`/titles`", value="View unlocked achievements.", inline=False)
             embed.add_field(name="`/set_title`", value="Equip a title to show on your profile.", inline=False)
-            embed.add_field(name="`/lb`", value="View the Global Battles Won leaderboard.", inline=False)
-            embed.add_field(name="`/lb [bp/rw/rp]`", value="View sub-leaderboards (Played, Rounds Won, etc).", inline=False)
+            embed.add_field(name="`/lb`", value="View the Server Battles Won leaderboard.", inline=False)
+            embed.add_field(name="`/lb [bp/rw/rp/coins]`", value="View sub-leaderboards (Played, Rounds, Wealth).", inline=False)
 
         elif value == "info":
             embed = discord.Embed(title="ℹ️ Bot Information", color=discord.Color.light_grey())
@@ -303,7 +303,7 @@ async def help_command(ctx):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.3.9"
+BOT_VERSION = "1.3.10"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 CHANGELOG = ['''1.0.0 - Initial realease 
@@ -325,7 +325,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.6- Catalog Command Added
 1.3.7- Beauty Enhancements
 1.3.8- Global & Server Leaderboards
-1.3.9- Lookup Command Added''']
+1.3.9- Lookup Command Added
+1.3.10- Lookup Mint Card Image Generation''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -1295,16 +1296,129 @@ async def view(ctx, *, identifier: str):
 
 #---------------------------------------------------------LOOKUP-------------------------------------------------------------------------------------
 
-@bot.hybrid_command(name='lookup', aliases=['lu'], description="Inspect a specific card owned by a user")
+def generate_minted_card(card_path, avatar_bytes, owner_name, edition_text):
+    try:
+        # 1. Load Base Card
+        card_img = Image.open(card_path).convert("RGBA")
+        card_w, card_h = card_img.size
+        draw = ImageDraw.Draw(card_img)
+
+        # --- Setup Fonts ---
+        try:
+            font_owner = ImageFont.truetype("arialbd.ttf", 26)
+            font_edition = ImageFont.truetype("arialbd.ttf", 28)
+        except:
+            font_owner = ImageFont.load_default()
+            font_edition = ImageFont.load_default()
+
+        # Layout Settings
+        edge_padding = 20
+        
+        # ==============================================================================
+        # LEFT BOTTOM: OWNER TAG (PFP + Name)
+        # ==============================================================================
+        pfp_size = 40
+        inner_padding = 10
+
+        # Calculate text dimensions
+        owner_bbox = draw.textbbox((0, 0), owner_name, font=font_owner)
+        owner_text_w = owner_bbox[2] - owner_bbox[0]
+        
+        # Pill Dimensions
+        owner_pill_w = pfp_size + owner_text_w + (inner_padding * 3)
+        owner_pill_h = pfp_size + inner_padding
+
+        # Create Pill
+        owner_pill = Image.new("RGBA", (owner_pill_w, owner_pill_h), (0, 0, 0, 0))
+        pill_draw = ImageDraw.Draw(owner_pill)
+
+        # Draw Background
+        pill_draw.rounded_rectangle(
+            [(0, 0), (owner_pill_w, owner_pill_h)],
+            radius=owner_pill_h // 2,
+            fill=(20, 20, 20, 230),
+            outline=(255, 255, 255, 100), width=1
+        )
+
+        # Paste Avatar
+        if avatar_bytes:
+            avatar_img = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+            avatar_img = avatar_img.resize((pfp_size, pfp_size), Image.Resampling.LANCZOS)
+            
+            mask = Image.new("L", (pfp_size, pfp_size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, pfp_size, pfp_size), fill=255)
+            circular_avatar = ImageOps.fit(avatar_img, mask.size, centering=(0.5, 0.5))
+            circular_avatar.putalpha(mask)
+            
+            owner_pill.paste(circular_avatar, (inner_padding//2, inner_padding//2), circular_avatar)
+
+        # Draw Name
+        text_x = pfp_size + inner_padding
+        text_y = (owner_pill_h - (owner_bbox[3] - owner_bbox[1])) // 2 - 4
+        pill_draw.text((text_x, text_y), owner_name, font=font_owner, fill="white")
+
+        # Paste onto Card (Bottom Left)
+        card_img.paste(owner_pill, (edge_padding, card_h - owner_pill_h - edge_padding), owner_pill)
+
+
+        # ==============================================================================
+        # RIGHT BOTTOM: EDITION PLATE
+        # ==============================================================================
+        ed_bbox = draw.textbbox((0, 0), edition_text, font=font_edition)
+        ed_w = ed_bbox[2] - ed_bbox[0]
+        ed_h = ed_bbox[3] - ed_bbox[1]
+
+        plate_w = ed_w + 40
+        plate_h = owner_pill_h 
+
+        # Create Plate
+        plate_img = Image.new("RGBA", (plate_w, plate_h), (0, 0, 0, 0))
+        plate_draw = ImageDraw.Draw(plate_img)
+
+        gold_border = (218, 165, 32, 255)
+        gold_text = (255, 223, 0, 255)
+        dark_fill = (30, 30, 30, 230)
+
+        # Draw Background
+        plate_draw.rounded_rectangle(
+            [(0, 0), (plate_w, plate_h)],
+            radius=10,
+            fill=dark_fill,
+            outline=gold_border,
+            width=2
+        )
+
+        # Draw Text
+        text_pos_x = (plate_w - ed_w) // 2
+        text_pos_y = (plate_h - ed_h) // 2 - 4
+        plate_draw.text((text_pos_x, text_pos_y), edition_text, font=font_edition, fill=gold_text)
+
+        # Paste onto Card (Bottom Right)
+        card_img.paste(plate_img, (card_w - plate_w - edge_padding, card_h - plate_h - edge_padding), plate_img)
+
+        # --- Finalize ---
+        buffer = io.BytesIO()
+        card_img.save(buffer, format="PNG")
+        buffer.seek(0)
+        return buffer
+
+    except Exception as e:
+        print(f"Error generating minted card: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+@bot.hybrid_command(name='lookup', aliases=['lu'], description="Inspect a specific card owned by a user (Visual Slab)")
 async def lookup(ctx, card_id: int, user: discord.User = None):
-    # 1. Determine Target
+    await ctx.defer()
+
     target_user = user or ctx.author
     ensure_player_exists(target_user.id, target_user.name)
 
     conn = sqlite3.connect('cards_game.db')
     cursor = conn.cursor()
     
-    # 2. Query Database (Added c.copies to the select list)
     cursor.execute('''
         SELECT c.name, c.overall, c.attack, c.defense, c.speed, 
                c.card_rarity, c.card_type, c.image_path, c.copies, i.edition
@@ -1316,27 +1430,44 @@ async def lookup(ctx, card_id: int, user: discord.User = None):
     result = cursor.fetchone()
     conn.close()
 
-    # 3. Check Ownership
     if not result:
         return await ctx.send(f"❌ **{target_user.name}** does not own Card ID `{card_id}`.")
 
-    # 4. Unpack Data (Added total_copies)
     name, overall, atk, def_, spd, rarity, type_, image_path, total_copies, edition = result
+    edition_str = f"#{edition}/{total_copies}"
 
-    # 5. Build "Slab" Style Embed
+    # --- GENERATE IMAGE ---
+    try:
+        avatar_bytes = await target_user.display_avatar.read()
+    except:
+        avatar_bytes = None
+
+    image_buffer = await bot.loop.run_in_executor(
+        None, 
+        generate_minted_card, 
+        image_path, 
+        avatar_bytes, 
+        target_user.name, 
+        edition_str
+    )
+
+    if not image_buffer:
+        return await ctx.send("❌ Error generating card image.")
+
+    file = discord.File(fp=image_buffer, filename=f"minted_{card_id}.png")
+    
+    # --- BUILD EMBED ---
     embed = discord.Embed(title=f"🔍 Card Inspection: {name}", color=discord.Color.gold())
     
+    # FIX: Added Property Of line back to the Embed Header
     embed.set_author(name=f"Property of {target_user.name}", icon_url=target_user.display_avatar.url)
-    
-    # --- UPDATED EDITION FORMAT ---
-    embed.add_field(name="Mint Details", value=f"🆔 **ID:** {card_id}\n#️⃣ **Edition:** #{edition}/{total_copies}", inline=True)
+
+    embed.add_field(name="Mint Details", value=f"🆔 **ID:** {card_id}\n#️⃣ **Edition:** {edition_str}", inline=True)
     embed.add_field(name="Card Info", value=f"💎 {rarity}\n🏆 {type_}", inline=True)
-    
     embed.add_field(name="Performance", value=f"⭐ **{overall}** | ⚔️ {atk} | 🛡️ {def_} | ⚡ {spd}", inline=False)
 
-    embed.set_image(url=f"attachment://{image_path.split('/')[-1]}")
-    
-    await ctx.send(embed=embed, file=discord.File(image_path))
+    # Note: No set_image() here, so the file appears ABOVE the embed
+    await ctx.send(file=file, embed=embed)
 
 
 #---------------------------------------------------------DROPS-------------------------------------------------------------------------------------
