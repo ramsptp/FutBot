@@ -1266,7 +1266,6 @@ class ViewCardSelectView(View):
 
 class ToggleWishlistButton(discord.ui.Button):
     def __init__(self, card_id, is_wishlisted):
-        # Dynamic style/label based on initial state
         label = "Remove from Wishlist" if is_wishlisted else "Add to Wishlist"
         emoji = "💔" if is_wishlisted else "❤️"
         style = discord.ButtonStyle.red if is_wishlisted else discord.ButtonStyle.secondary
@@ -1276,35 +1275,23 @@ class ToggleWishlistButton(discord.ui.Button):
         self.is_wishlisted = is_wishlisted
 
     async def callback(self, interaction: discord.Interaction):
-        # Only the person who invoked the command (or owner) can usually interact, 
-        # but for Wishlists, ANYONE should be able to wishlist the card they are looking at.
-        # So we use interaction.user.id directly.
-
         conn = sqlite3.connect('cards_game.db')
         cursor = conn.cursor()
 
         try:
-            # Check current state for THIS user (the clicker)
             cursor.execute('SELECT 1 FROM wishlists WHERE user_id = ? AND card_id = ?', (interaction.user.id, self.card_id))
             exists = cursor.fetchone()
 
             if exists:
-                # REMOVE
                 cursor.execute('DELETE FROM wishlists WHERE user_id = ? AND card_id = ?', (interaction.user.id, self.card_id))
                 cursor.execute('UPDATE cards SET wishlist_count = MAX(0, wishlist_count - 1) WHERE card_id = ?', (self.card_id,))
                 
-                # Update Button State for the CLICKER
-                # Note: This is tricky because the button updates for EVERYONE on the message.
-                # Standard discord behavior: modifying the view updates it for everyone.
-                # So we update the button to reflect the state of the person who just clicked.
                 self.style = discord.ButtonStyle.secondary
                 self.label = "Add to Wishlist"
                 self.emoji = "❤️"
                 self.is_wishlisted = False
-                
                 action_msg = "Removed from your wishlist."
             else:
-                # ADD
                 cursor.execute('INSERT INTO wishlists (user_id, card_id) VALUES (?, ?)', (interaction.user.id, self.card_id))
                 cursor.execute('UPDATE cards SET wishlist_count = wishlist_count + 1 WHERE card_id = ?', (self.card_id,))
                 
@@ -1312,25 +1299,27 @@ class ToggleWishlistButton(discord.ui.Button):
                 self.label = "Remove from Wishlist"
                 self.emoji = "💔"
                 self.is_wishlisted = True
-                
                 action_msg = "Added to your wishlist."
 
             conn.commit()
 
-            # Get new global count to update Embed
             cursor.execute('SELECT wishlist_count FROM cards WHERE card_id = ?', (self.card_id,))
             new_count = cursor.fetchone()[0]
             conn.close()
 
-            # Update Embed "Popularity" Field
+            # Update Embed
             embed = interaction.message.embeds[0]
-            # We need to find the field named "Popularity" and update it
+            
+            # Update the Popularity Field
             for i, field in enumerate(embed.fields):
                 if field.name == "Popularity":
                     embed.set_field_at(i, name="Popularity", value=f"❤️ {new_count} Wishlists", inline=True)
                     break
             
-            # Send hidden confirmation
+            # --- FIX: FORCE REMOVE IMAGE INSIDE EMBED ---
+            # This ensures the image stays as an "Attachment" on top, and doesn't duplicate inside.
+            embed.set_image(url=None) 
+            
             await interaction.response.edit_message(embed=embed, view=self.view)
             await interaction.followup.send(f"✅ {action_msg}", ephemeral=True)
 
@@ -1410,7 +1399,6 @@ async def view(ctx, *, identifier: str):
                 ownership = "First Owner" if trade_count == 0 else "Traded In"
                 embed.add_field(name="Ownership", value=ownership, inline=True)
 
-            embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
             embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
             # --- ATTACH THE VIEW ---
