@@ -223,7 +223,8 @@ async def on_command_error(ctx, error):
 
 #---------------------------------------------------------HELP-------------------------------------------------------------------------------------
 
-# Remove default help to replace it with ours
+#---------------------------------------------------------HELP-------------------------------------------------------------------------------------
+
 bot.remove_command('help')
 
 class HelpSelect(discord.ui.Select):
@@ -231,7 +232,7 @@ class HelpSelect(discord.ui.Select):
         options = [
             discord.SelectOption(label="Home", description="Back to main menu", emoji="🏠", value="home"),
             discord.SelectOption(label="Battle Arena", description="Combat, Decks, and Tactics", emoji="⚔️", value="battle"),
-            discord.SelectOption(label="Collection", description="Inventory, Inspection, Packs", emoji="🎒", value="collection"),
+            discord.SelectOption(label="Collection", description="Inventory, Catalog, Inspection", emoji="🎒", value="collection"),
             discord.SelectOption(label="Economy & Market", description="Coins, Shop, Trading", emoji="💰", value="economy"),
             discord.SelectOption(label="Stats & Rankings", description="Leaderboards and Achievements", emoji="🏆", value="stats"),
             discord.SelectOption(label="Bot Info", description="Version, Changelog, Extras", emoji="ℹ️", value="info")
@@ -244,54 +245,38 @@ class HelpSelect(discord.ui.Select):
         if value == "home":
             embed = discord.Embed(title="⚽ FutBot Help Center", description="Welcome to the ultimate football card battle bot!", color=discord.Color.gold())
             embed.add_field(name="Getting Started", value="Use the dropdown menu below to browse specific command categories.", inline=False)
-            embed.add_field(name="Quick Start", value="`/get_starter_pack` - Get your first cards\n`/daily` - Claim free rewards\n`/create_deck` - Build a team\n`/battle` - Fight players", inline=False)
+            embed.add_field(name="Quick Start", value="`/get_starter_pack` - Get your first cards\n`/daily` - Claim free rewards\n`/build_deck` - Create a team visually\n`/battle` - Fight players", inline=False)
             embed.set_footer(text="Select a category for detailed command usage.")
         
         elif value == "battle":
             embed = discord.Embed(title="⚔️ Battle Arena", color=discord.Color.red())
-            embed.add_field(name="`/battle @user`", value="Challenge another player to a 5-round match.", inline=False)
-            embed.add_field(name="`/create_deck`", value="Create a battle deck with 5 specific Card IDs.", inline=False)
-            embed.add_field(name="`/edit_deck`", value="Modify an existing deck.", inline=False)
-            embed.add_field(name="`/decks`", value="View your list of decks.", inline=False)
-            embed.add_field(name="`/view_deck [name]`", value="Visualize your team lineup on the pitch.", inline=False)
-            embed.add_field(name="`/battle_logic`", value="Read the rules of combat and stat comparisons.", inline=False)
+            embed.add_field(name="Matchmaking", value="`/battle @user` - Challenge a player to a 5-round match.", inline=False)
+            embed.add_field(name="Deck Management", value="`/build_deck [name]` - **NEW!** Visual interactive deck builder.\n`/create_deck` - Manual creation (Requires IDs).\n`/edit_deck` - Modify an existing deck.\n`/decks` - View your list of decks.\n`/view_deck` - Visualize your lineup.", inline=False)
+            embed.add_field(name="Info", value="`/battle_logic` - Learn the rules of combat.", inline=False)
 
         elif value == "collection":
             embed = discord.Embed(title="🎒 Collection & Items", color=discord.Color.blue())
-            embed.add_field(name="`/inventory`", value="View your card collection with filters and sorting.", inline=False)
-            embed.add_field(name="`/lookup [id] (@user)`", value="**NEW!** Generate a custom 'Minted' slab image for a specific card you own (shows Edition #).", inline=False)
-            embed.add_field(name="`/catalog [search]`", value="View ALL cards in the game database (owned or not).", inline=False)
-            embed.add_field(name="`/view [name_or_id]`", value="Inspect a card's base stats and art.", inline=False)
-            embed.add_field(name="`/packs`", value="See your unopened card packs.", inline=False)
-            embed.add_field(name="`/open [pack_id]`", value="Open a pack to get new players.", inline=False)
-            embed.add_field(name="`/weight [name]`", value="Check the drop rarity chance of a card.", inline=False)
+            embed.add_field(name="Viewing", value="`/inventory` - View your cards (Sort/Filter available).\n`/catalog` - Browse ALL cards in the game database.\n`/view [name]` - See card stats and global popularity.", inline=False)
+            embed.add_field(name="Inspection", value="`/lookup [id]` - Generate a custom 'Minted' slab for a card you own.", inline=False)
+            embed.add_field(name="Packs", value="`/packs` - See your unopened card packs.\n`/open [id]` - Open a pack.\n`/weight` - Check drop chances.", inline=False)
+            embed.add_field(name="Wishlist", value="`/wishlist [id]` - Add/Remove a card from your wishlist.\n`/wishlists [@user]` - View your (or a friend's) wishlist.", inline=False)
 
         elif value == "economy":
             embed = discord.Embed(title="💰 Economy & Market", color=discord.Color.green())
-            embed.add_field(name="`/daily`", value="Claim your daily free cards (18h Cooldown).", inline=False)
-            embed.add_field(name="`/drop`", value="Drop a card in chat for anyone to grab (30m Cooldown).", inline=False)
-            embed.add_field(name="`/coins`", value="Check your current balance.", inline=False)
-            embed.add_field(name="`/shop`", value="View packs available for purchase.", inline=False)
-            embed.add_field(name="`/buy [pack_id]`", value="Purchase a pack using coins.", inline=False)
-            embed.add_field(name="`/sell [card_id]`", value="Sell a card back to the system for coins.", inline=False)
-            embed.add_field(name="`/trade`", value="Quickly swap one card for another (1-for-1).", inline=False)
-            embed.add_field(name="`/exchange @user`", value="Open the advanced trading table (Cards + Coins).", inline=False)
+            embed.add_field(name="Earning", value="`/daily` - Claim free cards (18h Cooldown).\n`/drop` - Drop a card in chat (30m Cooldown).", inline=False)
+            embed.add_field(name="Trading", value="`/trade` - Quick 1-for-1 card swap.\n`/exchange` - Advanced table for Cards + Coins trading.", inline=False)
+            embed.add_field(name="Market", value="`/shop` - Buy packs with coins.\n`/buy` - Purchase a pack.\n`/sell` - Sell a card for quick coins.", inline=False)
+            embed.add_field(name="Wallet", value="`/coins` - Check your balance.", inline=False)
 
         elif value == "stats":
             embed = discord.Embed(title="🏆 Stats & Rankings", color=discord.Color.purple())
-            embed.add_field(name="`/stats [@user]`", value="View battle records and win rates.", inline=False)
-            embed.add_field(name="`/titles`", value="View unlocked achievements.", inline=False)
-            embed.add_field(name="`/set_title`", value="Equip a title to show on your profile.", inline=False)
-            embed.add_field(name="`/lb`", value="View the Server Battles Won leaderboard.", inline=False)
-            embed.add_field(name="`/lb [bp/rw/rp/coins]`", value="View sub-leaderboards (Played, Rounds, Wealth).", inline=False)
+            embed.add_field(name="Profile", value="`/stats [@user]` - View battle records and win rates.\n`/titles` - View unlocked achievements.\n`/set_title` - Equip a profile title.", inline=False)
+            embed.add_field(name="Leaderboards", value="`/lb` - View Server Rankings.\n`/lb [bp/rw/rp/coins]` - View sub-leaderboards (Played, Rounds, Wealth).", inline=False)
 
         elif value == "info":
             embed = discord.Embed(title="ℹ️ Bot Information", color=discord.Color.light_grey())
-            embed.add_field(name="`/about`", value="Credits and Creator info.", inline=False)
-            embed.add_field(name="`/changelog`", value="See the latest updates.", inline=False)
-            embed.add_field(name="`/facts`", value="Get a random football fact.", inline=False)
-            embed.add_field(name="`/suggest`", value="Send feedback to the developer.", inline=False)
-            embed.add_field(name="Secret Commands", value="There are hidden commands based on countries... can you find them?", inline=False)
+            embed.add_field(name="General", value="`/about` - Bot Info.\n`/changelog` - Latest Updates.\n`/facts` - Football Trivia.\n`/suggest` - Send feedback.", inline=False)
+            embed.add_field(name="Secrets", value="There are hidden commands based on countries... can you find them?", inline=False)
 
         await interaction.response.edit_message(embed=embed, view=self.view)
 
@@ -304,11 +289,10 @@ class HelpView(discord.ui.View):
 async def help_command(ctx):
     embed = discord.Embed(title="⚽ FutBot Help Center", description="Welcome to the ultimate football card battle bot!", color=discord.Color.gold())
     embed.add_field(name="Getting Started", value="Use the dropdown menu below to browse specific command categories.", inline=False)
-    embed.add_field(name="Quick Start", value="`/get_starter_pack` - Get your first cards\n`/daily` - Claim free rewards\n`/create_deck` - Build a team\n`/battle` - Fight players", inline=False)
+    embed.add_field(name="Quick Start", value="`/get_starter_pack` - Get your first cards\n`/daily` - Claim free rewards\n`/build_deck` - Create a team\n`/battle` - Fight players", inline=False)
     
     view = HelpView()
     await ctx.send(embed=embed, view=view)
-
 #---------------------------------------------------------ABOUT-------------------------------------------------------------------------------------
 
 
