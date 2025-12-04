@@ -2999,33 +2999,31 @@ class Battle:
         cursor = conn.cursor()
         
         try:
-            # Update Stats
             cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_won = battles_won + 1 WHERE user_id = ?', (winner.id,))
             cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_lost = battles_lost + 1 WHERE user_id = ?', (loser.id,))
-            
-            # Update Coins (Directly, to avoid helper function locks)
             cursor.execute('UPDATE players SET coins = coins + 200 WHERE user_id = ?', (winner.id,))
             cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (loser.id,))
-            
             conn.commit()
         except Exception as e:
             logger.error(f"Surrender DB Error: {e}")
         finally:
             conn.close()
         
-        # Check achievements (Safe to do after DB close)
-        await self.check_achievements(winner.id, 'battles_won', interaction)
-
+        # 1. Update the Battle Message (Background)
         embed = discord.Embed(title="🏳️ Battle Surrendered", color=discord.Color.red())
         embed.add_field(name="Result", value=f"**{winner.name}** wins! {loser.name} has surrendered.", inline=False)
         embed.add_field(name="Rewards", value=f"{winner.name}: +200 Coins\n{loser.name}: +100 Coins", inline=False)
-        
         await self.message.edit(embed=embed, view=None)
+        
+        # 2. Acknowledge the Interaction (Ephemeral "You surrendered")
         try:
             if not interaction.response.is_done():
                 await interaction.response.edit_message(content="🏳️ You surrendered.", view=None)
         except:
             pass
+
+        # 3. NOW check achievements (Safe because interaction is done)
+        await self.check_achievements(winner.id, 'battles_won', interaction)
 
     # 2. DRAW LOGIC (Fixed DB Locking)
     async def confirm_draw(self, interaction):
@@ -3093,6 +3091,13 @@ class Battle:
 
     # 4. END GAME LOGIC (Fixed DB Locking + Card Stats)
     async def end_game(self, interaction, last_round_embed):
+        # FIX: Acknowledge interaction immediately so followups work
+        try:
+            if interaction and not interaction.response.is_done():
+                await interaction.response.defer()
+        except:
+            pass
+
         winner, loser, is_draw = None, None, False
         if self.player1_wins > self.player2_wins:
             winner, loser = self.player1, self.player2
@@ -3108,14 +3113,10 @@ class Battle:
             cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player1.id,))
             cursor.execute('UPDATE players SET battles_played = battles_played + 1 WHERE user_id = ?', (self.player2.id,))
 
-            # Helper to update deck stats (Battles)
             def update_deck_stats(deck, user, won_battle):
                 for card in deck:
-                    # Update Inventory Copy
                     cursor.execute('UPDATE inventories SET battles_played = battles_played + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
-                    # Update Global Card
                     cursor.execute('UPDATE cards SET total_battles_played = total_battles_played + 1 WHERE card_id = ?', (card.card_id,))
-                    
                     if won_battle:
                         cursor.execute('UPDATE inventories SET battles_won = battles_won + 1 WHERE card_id = ? AND user_id = ?', (card.card_id, user.id))
                         cursor.execute('UPDATE cards SET total_battles_won = total_battles_won + 1 WHERE card_id = ?', (card.card_id,))
@@ -3123,8 +3124,6 @@ class Battle:
             if is_draw:
                 cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
                 cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
-                
-                # Coins
                 cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player1.id,))
                 cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player2.id,))
                 
@@ -3137,8 +3136,6 @@ class Battle:
             else:
                 cursor.execute('UPDATE players SET battles_won = battles_won + 1 WHERE user_id = ?', (winner.id,))
                 cursor.execute('UPDATE players SET battles_lost = battles_lost + 1 WHERE user_id = ?', (loser.id,))
-                
-                # Coins
                 cursor.execute('UPDATE players SET coins = coins + 200 WHERE user_id = ?', (winner.id,))
                 cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (loser.id,))
                 
@@ -3155,13 +3152,16 @@ class Battle:
         finally:
             conn.close()
 
-        # Handle Achievements after DB is closed
+        # Achievements (Safe now because we deferred earlier)
         if not is_draw:
             await self.check_achievements(winner.id, 'battles_won', interaction)
 
         embed.add_field(name="Final Score", value=f"{self.player1.name}: {self.player1_wins} | {self.player2.name}: {self.player2_wins} | Draws: {self.draws}", inline=False)
+        
         if last_round_embed:
-             embed.add_field(name="Last Round", value=last_round_embed.description, inline=False)
+            embed.add_field(name="────── Final Round ──────", value=f"**Result:** {last_round_embed.description}", inline=False)
+            for field in last_round_embed.fields:
+                embed.add_field(name=field.name, value=field.value, inline=True)
 
         await self.message.edit(embed=embed, view=None)
 
@@ -3193,9 +3193,19 @@ class Battle:
     
 
     def get_valid_deck(self, player):
-        full_deck = self.player1_deck if player.id == self.player1.id else self.player2_deck
-        used = self.player1_used_cards if player.id == self.player1.id else self.player2_used_cards
-        return [c for c in full_deck if c not in used]
+        # 1. Select the correct deck and used list based on player ID
+        if player.id == self.player1.id:
+            full_deck = self.player1_deck
+            used_cards = self.player1_used_cards
+        else:
+            full_deck = self.player2_deck
+            used_cards = self.player2_used_cards
+        
+        # 2. Extract IDs of used cards for reliable comparison
+        used_ids = {card.card_id for card in used_cards}
+        
+        # 3. Filter the deck: Keep cards ONLY if their ID is not in the used list
+        return [card for card in full_deck if card.card_id not in used_ids]
 
     async def update_game_state(self, interaction=None):
         # 1. SETUP
@@ -3213,7 +3223,6 @@ class Battle:
             
             view = ActionView(self, self.turn_player)
             
-            # Helper to edit message safely
             if interaction and not interaction.response.is_done():
                 await interaction.response.edit_message(embed=embed, view=view)
             else:
@@ -3235,26 +3244,22 @@ class Battle:
             else:
                 await self.message.edit(embed=embed, view=view)
 
-
         # 4. RESULT
         elif self.phase == "RESULT":
-            # --- FIX: Only calculate and update stats if not done yet ---
             if not self.round_resolved:
                 result_text, winner = self.calculate_winner()
                 self.update_round_db_stats(winner)
                 
-                if winner: 
-                    await self.check_achievements(winner.id, 'rounds_won', interaction)
-
+                # --- FIX: Restore these lines to track used cards ---
                 self.player1_used_cards.append(self.p1_card)
                 self.player2_used_cards.append(self.p2_card)
-                
-                # Save result so we can just display it if this runs again
+                # --------------------------------------------------
+
+                # Store result
                 self.last_result_text = result_text
                 self.last_winner = winner
                 self.round_resolved = True
             else:
-                # Use the cached result if function runs twice
                 result_text = self.last_result_text
                 winner = self.last_winner
 
@@ -3271,6 +3276,10 @@ class Battle:
                     await interaction.response.edit_message(embed=embed, view=view)
                 else:
                     await self.message.edit(embed=embed, view=view)
+                
+                # Check Achievements
+                if winner and not self.round_resolved: 
+                     await self.check_achievements(winner.id, 'rounds_won', interaction)
 
     def calculate_winner(self):
         p1_val, p2_val, stat_name = 0, 0, "Stat"
