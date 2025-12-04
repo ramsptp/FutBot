@@ -313,7 +313,7 @@ async def help_command(ctx):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.4.1"
+BOT_VERSION = "1.4.3"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 CHANGELOG = ['''1.0.0 - Initial realease 
@@ -338,7 +338,9 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.3.9- Lookup Command Added
 1.3.10- Lookup Mint Card Image Generation
 1.4.0- Wishlist System Added
-1.4.1- More Card Stats Tracking ''']
+1.4.1- More Card Stats Tracking 
+1.4.2- Added build_deck command
+1.4.3- Fixed last round not showing in battles''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -4266,6 +4268,222 @@ async def view_deck(ctx, deck_name: str, user: discord.User = None):
 
     # 7. Send
     await ctx.send(file=file, embed=embed)
+
+
+
+# ---------------------------------------------------------VISUAL DECK BUILDER-------------------------------------------------------------------------------------
+
+class DeckBuilderSelect(discord.ui.Select):
+    def __init__(self, page_cards, selected_ids):
+        options = []
+        for card in page_cards:
+            # Check if this card is currently selected in the draft
+            is_selected = card.card_id in selected_ids
+            
+            # Visual feedback: Add checkmark if selected
+            label = f"{'✅ ' if is_selected else ''}{card.name}"
+            desc = f"OVR: {card.overall} | {card.card_type}"
+            
+            options.append(discord.SelectOption(
+                label=label, 
+                description=desc, 
+                value=str(card.card_id),
+                emoji="⚽"
+            ))
+
+        super().__init__(
+            placeholder="Select cards to add/remove...",
+            min_values=1,
+            max_values=1, # We handle one click at a time to keep logic simple across pages
+            options=options,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        card_id = int(self.values[0])
+        
+        # Toggle Logic
+        if card_id in view.selected_ids:
+            view.selected_ids.remove(card_id)
+            action = "removed"
+        else:
+            if len(view.selected_ids) >= 5:
+                return await interaction.response.send_message("⛔ Your deck is full (5/5). Remove a card first.", ephemeral=True)
+            view.selected_ids.append(card_id)
+            action = "added"
+
+        await view.update_display(interaction)
+
+class DeckBuilderView(discord.ui.View):
+    def __init__(self, ctx, inventory, deck_name):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.inventory = inventory
+        self.deck_name = deck_name
+        
+        self.current_page = 0
+        self.items_per_page = 20 # Discord dropdown max is 25
+        self.total_pages = max(1, (len(inventory) - 1) // self.items_per_page + 1)
+        
+        self.selected_ids = [] # List of Card IDs
+        
+        # Initial Render
+        self.update_components()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("⛔ This is not your deck builder.", ephemeral=True)
+            return False
+        return True
+
+    def get_page_items(self):
+        start = self.current_page * self.items_per_page
+        end = start + self.items_per_page
+        return self.inventory[start:end]
+
+    def update_components(self):
+        self.clear_items()
+        
+        # 1. Add Dropdown for current page
+        page_cards = self.get_page_items()
+        if page_cards:
+            self.add_item(DeckBuilderSelect(page_cards, self.selected_ids))
+
+        # 2. Add Navigation Buttons
+        if self.current_page > 0:
+            self.add_item(BuilderPrevButton())
+        if self.current_page < self.total_pages - 1:
+            self.add_item(BuilderNextButton())
+
+        # 3. Add Save/Cancel Buttons
+        self.add_item(BuilderSaveButton(disabled=(len(self.selected_ids) != 5)))
+        self.add_item(BuilderCancelButton())
+
+    async def update_display(self, interaction):
+        self.update_components()
+        
+        # Build the Status Embed
+        embed = discord.Embed(title=f"🛠️ Deck Builder: {self.deck_name}", color=discord.Color.blue())
+        
+        # List Selected Cards
+        if self.selected_ids:
+            # We need to find the card names for the IDs
+            selected_names = []
+            for cid in self.selected_ids:
+                # Find card object in inventory list
+                card_obj = next((c for c in self.inventory if c.card_id == cid), None)
+                if card_obj:
+                    selected_names.append(f"• **{card_obj.name}** ({card_obj.overall})")
+            
+            card_list_str = "\n".join(selected_names)
+        else:
+            card_list_str = "*No cards selected*"
+
+        embed.add_field(name=f"Current Lineup ({len(self.selected_ids)}/5)", value=card_list_str, inline=False)
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} | Select a card in the dropdown to Add/Remove it.")
+
+        if interaction.response.is_done():
+            await self.message.edit(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+# --- BUTTONS ---
+
+class BuilderPrevButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Previous", style=discord.ButtonStyle.primary, row=1)
+    async def callback(self, interaction):
+        self.view.current_page -= 1
+        await self.view.update_display(interaction)
+
+class BuilderNextButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Next", style=discord.ButtonStyle.primary, row=1)
+    async def callback(self, interaction):
+        self.view.current_page += 1
+        await self.view.update_display(interaction)
+
+class BuilderSaveButton(discord.ui.Button):
+    def __init__(self, disabled=True):
+        style = discord.ButtonStyle.grey if disabled else discord.ButtonStyle.green
+        label = "Wait..." if disabled else "Save Deck"
+        emoji = "⏳" if disabled else "💾"
+        super().__init__(label=label, style=style, emoji=emoji, disabled=disabled, row=2)
+
+    async def callback(self, interaction):
+        view = self.view
+        
+        # Final Safety Check
+        if len(view.selected_ids) != 5:
+            return await interaction.response.send_message("You need exactly 5 cards!", ephemeral=True)
+
+        # Logic to Save to DB
+        try:
+            # We use the existing logic inside add_deck, but we call it safely here
+            # Since view.selected_ids is a list of INTs, we are good.
+            
+            # Note: add_deck helper might raise errors if deck name exists
+            # We should probably check if deck exists first or handle the error
+            add_deck(interaction.user.id, view.deck_name, view.selected_ids)
+            
+            embed = discord.Embed(title="✅ Deck Saved!", description=f"Deck **{view.deck_name}** has been created successfully.", color=discord.Color.green())
+            await interaction.response.edit_message(embed=embed, view=None)
+            view.stop()
+            
+        except ValueError as e:
+            # If deck name exists, maybe we update it? 
+            # For now, let's just show the error.
+            if "already exists" in str(e):
+                await interaction.response.send_message(f"⚠️ A deck named '{view.deck_name}' already exists. Use `/edit_deck` or choose a different name.", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"Error: {e}", ephemeral=True)
+
+class BuilderCancelButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Cancel", style=discord.ButtonStyle.danger, row=2)
+    async def callback(self, interaction):
+        await interaction.response.edit_message(content="❌ Deck building cancelled.", embed=None, view=None)
+        self.view.stop()
+
+# --- COMMAND ---
+
+@bot.hybrid_command(name='build_deck', description="Interactively build a deck")
+async def build_deck(ctx, deck_name: str):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    
+    # 1. Check if deck name already exists to save time
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1 FROM decks WHERE user_id = ? AND deck_name = ?', (ctx.author.id, deck_name))
+    if cursor.fetchone():
+        conn.close()
+        return await ctx.send(f"❌ You already have a deck named **{deck_name}**. Please choose a different name.")
+    conn.close()
+
+    # 2. Get Inventory
+    inventory, editions = get_player_inventory(ctx.author.id)
+    if not inventory:
+        return await ctx.send("You have no cards to build a deck with!")
+
+    # 3. Start UI
+    view = DeckBuilderView(ctx, inventory, deck_name)
+    
+    embed = discord.Embed(title=f"🛠️ Deck Builder: {deck_name}", description="Loading inventory...", color=discord.Color.blue())
+    msg = await ctx.send(embed=embed, view=view)
+    view.message = msg
+    
+    # Trigger first render
+    await view.update_display(ctx.interaction if ctx.interaction else None) 
+    # Note: For text commands, update_display might need a small tweak or just rely on initial init.
+    # Actually, let's just let the user click. The initial init handles components. 
+    # We just need to set the initial embed content correctly.
+    
+    # Re-do initial embed properly
+    embed = discord.Embed(title=f"🛠️ Deck Builder: {deck_name}", color=discord.Color.blue())
+    embed.add_field(name="Current Lineup (0/5)", value="*No cards selected*", inline=False)
+    embed.set_footer(text=f"Page 1/{view.total_pages} | Select a card in the dropdown to Add/Remove it.")
+    await msg.edit(embed=embed, view=view)
 
 
 
