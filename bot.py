@@ -324,7 +324,8 @@ CHANGELOG = ['''1.0.0 - Initial realease
 1.4.0- Wishlist System Added
 1.4.1- More Card Stats Tracking 
 1.4.2- Added build_deck command
-1.4.3- Fixed last round not showing in battles''']
+1.4.3- Fixed last round not showing in battles
+1.4.4- Better leaderboard commands''']
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
