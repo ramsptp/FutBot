@@ -2037,42 +2037,38 @@ def get_user_rank_and_details(user_id, criteria):
 
 #---------------------------------------------------------LEADERBOARDS-------------------------------------------------------------------------------------
 
+async def build_leaderboard_embed(guild, author_id, stat_column, stat_name, scope):
+    """Helper to generate the leaderboard Embed."""
+    scope = scope.title() # "Server" or "Global"
+    
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
 
-
-
-async def generate_leaderboard(ctx, stat_column, stat_name, scope):
-    # 1. Normalize Scope (Handle 'server', 'Server', 'SERVER')
-    scope = scope.title() # Converts to "Global" or "Server"
-
-    # 2. Fetch ALL players sorted by the stat
+    # 1. Fetch ALL players sorted by the stat
     cursor.execute(f'SELECT user_id, name, {stat_column} FROM players ORDER BY {stat_column} DESC')
     all_rows = cursor.fetchall()
+    conn.close()
 
     leaderboard_data = []
     user_rank_info = None
     rank_counter = 1
 
-    # 3. Filter Logic
+    # 2. Filter Logic
     if scope == 'Server':
-        # FIX: Ensure we have the full member list cached
-        if ctx.guild:
-            if len(ctx.guild.members) < ctx.guild.member_count:
-                await ctx.guild.chunk() # Force download member list
-            
-            # Create a set of IDs for fast checking
-            guild_member_ids = {member.id for member in ctx.guild.members}
-        else:
-            return await ctx.send("Server leaderboard cannot be used in DMs.")
+        if not guild:
+            return discord.Embed(title="Error", description="Server leaderboard cannot be used in DMs.", color=discord.Color.red())
+
+        # Optimization: Get set of member IDs for O(1) lookup
+        guild_member_ids = {member.id for member in guild.members}
         
         for row in all_rows:
             u_id, u_name, u_stat = row
             
-            # Check if this player is in the current server
             if u_id in guild_member_ids:
                 if len(leaderboard_data) < 10:
                     leaderboard_data.append((rank_counter, u_name, u_stat))
                 
-                if u_id == ctx.author.id:
+                if u_id == author_id:
                     user_rank_info = (rank_counter, u_name, u_stat)
                 
                 rank_counter += 1
@@ -2087,7 +2083,7 @@ async def generate_leaderboard(ctx, stat_column, stat_name, scope):
             if len(leaderboard_data) < 10:
                 leaderboard_data.append((rank_counter, u_name, u_stat))
             
-            if u_id == ctx.author.id:
+            if u_id == author_id:
                 user_rank_info = (rank_counter, u_name, u_stat)
             
             rank_counter += 1
@@ -2095,52 +2091,136 @@ async def generate_leaderboard(ctx, stat_column, stat_name, scope):
             if len(leaderboard_data) == 10 and user_rank_info:
                 break
 
-    # 4. Build Embed
+    # 3. Build Embed
     icon = "🌍" if scope == "Global" else "🏰"
     embed = discord.Embed(title=f"{icon} {scope} Leaderboard - {stat_name}", color=discord.Color.gold())
     
     if not leaderboard_data:
-        embed.description = "No ranked players found in this server."
-        return await ctx.send(embed=embed)
+        embed.description = "No ranked players found."
+        return embed
 
     description = ""
     for rank, name, value in leaderboard_data:
+        formatted_value = f"{value:,}"
         medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else f"**{rank}.**"
-        description += f"{medal} **{name}** • {value}\n"
+        description += f"{medal} **{name}** • {formatted_value}\n"
 
     embed.description = description
 
     if user_rank_info:
         rank, name, value = user_rank_info
-        embed.set_footer(text=f"Your Rank: #{rank} • {value}")
+        embed.set_footer(text=f"Your Rank: #{rank} • {value:,}")
     else:
         embed.set_footer(text="You are unranked or not in the top list.")
 
-    await ctx.send(embed=embed)
+    return embed
+
+
+class LeaderboardSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Battles Won", value="battles_won", emoji="🏆"),
+            discord.SelectOption(label="Battles Played", value="battles_played", emoji="⚔️"),
+            discord.SelectOption(label="Rounds Won", value="rounds_won", emoji="🥊"),
+            discord.SelectOption(label="Rounds Played", value="rounds_played", emoji="🔄"),
+            discord.SelectOption(label="Richest Players", value="coins", emoji="💰"),
+            discord.SelectOption(label="Cards Dropped", value="cards_dropped", emoji="🎁"),
+        ]
+        super().__init__(placeholder="Select Leaderboard Type...", min_values=1, max_values=1, options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        # Update view state
+        view.current_stat_key = self.values[0]
+        
+        # Map values to display names
+        names = {
+            "battles_won": "Battles Won",
+            "battles_played": "Battles Played",
+            "rounds_won": "Rounds Won",
+            "rounds_played": "Rounds Played",
+            "coins": "Coins",
+            "cards_dropped": "Cards Dropped"
+        }
+        view.current_stat_name = names.get(view.current_stat_key, "Stat")
+
+        # Generate new embed
+        embed = await build_leaderboard_embed(
+            interaction.guild, 
+            interaction.user.id, 
+            view.current_stat_key, 
+            view.current_stat_name, 
+            view.scope
+        )
+        
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class ScopeButton(discord.ui.Button):
+    def __init__(self, current_scope):
+        # If current is Server, button says "Switch to Global"
+        label = "Show Global" if current_scope == "Server" else "Show Server"
+        emoji = "🌍" if current_scope == "Server" else "🏰"
+        style = discord.ButtonStyle.secondary
+        super().__init__(label=label, emoji=emoji, style=style, row=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        # Toggle Scope
+        if view.scope == "Server":
+            view.scope = "Global"
+            self.label = "Show Server"
+            self.emoji = "🏰"
+        else:
+            view.scope = "Server"
+            self.label = "Show Global"
+            self.emoji = "🌍"
+            
+        # Re-build embed using the CURRENT stat (so we don't reset to Battles Won)
+        embed = await build_leaderboard_embed(
+            interaction.guild,
+            interaction.user.id,
+            view.current_stat_key,
+            view.current_stat_name,
+            view.scope
+        )
+        
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class LeaderboardView(discord.ui.View):
+    def __init__(self, scope, initial_stat_key="battles_won", initial_stat_name="Battles Won"):
+        super().__init__(timeout=120)
+        self.scope = scope
+        self.current_stat_key = initial_stat_key
+        self.current_stat_name = initial_stat_name
+        
+        # Add components
+        self.add_item(LeaderboardSelect())
+        self.add_item(ScopeButton(scope))
 
 
 # --- COMMANDS ---
 
-@bot.hybrid_group(name='lb', description="View leaderboards", fallback="battles_won")
-async def leaderboard(ctx, scope: str = 'Server'):
-    """Default: Battles Won (Server)"""
-    await generate_leaderboard(ctx, 'battles_won', 'Battles Won', scope)
+@bot.hybrid_command(name='leaderboard', aliases=['lb'], description="View game rankings")
+async def leaderboard(ctx):
+    # Default to Server Scope, Battles Won
+    embed = await build_leaderboard_embed(ctx.guild, ctx.author.id, 'battles_won', 'Battles Won', 'Server')
+    view = LeaderboardView('Server')
+    await ctx.send(embed=embed, view=view)
 
-@leaderboard.command(name='bp', description="Leaderboard: Battles Played")
-async def leaderboard_battles_played(ctx, scope: str = 'Server'):
-    await generate_leaderboard(ctx, 'battles_played', 'Battles Played', scope)
-
-@leaderboard.command(name='rw', description="Leaderboard: Rounds Won")
-async def leaderboard_rounds_won(ctx, scope: str = 'Server'):
-    await generate_leaderboard(ctx, 'rounds_won', 'Rounds Won', scope)
-
-@leaderboard.command(name='rp', description="Leaderboard: Rounds Played")
-async def leaderboard_rounds_played(ctx, scope: str = 'Server'):
-    await generate_leaderboard(ctx, 'rounds_played', 'Rounds Played', scope)
-
-@leaderboard.command(name='coins', description="Leaderboard: Richest Players")
-async def leaderboard_coins(ctx, scope: str = 'Server'):
-    await generate_leaderboard(ctx, 'coins', 'Coins', scope)
+@bot.hybrid_command(name='richest', description="View the coins leaderboard")
+async def richest(ctx):
+    # Default to Server Scope, Coins
+    embed = await build_leaderboard_embed(ctx.guild, ctx.author.id, 'coins', 'Coins', 'Server')
+    
+    # Initialize view with Coins set as current
+    view = LeaderboardView('Server', initial_stat_key='coins', initial_stat_name='Coins')
+    
+    # Optional: Pre-select 'coins' in dropdown if you want, 
+    # but the placeholder logic works fine.
+    
+    await ctx.send(embed=embed, view=view)
 
 
 #---------------------------------------------------------INVENTORY-------------------------------------------------------------------------------------
