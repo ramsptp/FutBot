@@ -102,5 +102,5 @@ The bot will automatically create the `cards_game.db` database file on the first
 
 ## 👤 Credits
 
-**Creator:** Rams
+**Creator:** Rams.
 *Developed with a passion for football and trading card games.*
