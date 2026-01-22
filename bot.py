@@ -1439,29 +1439,25 @@ class CardDetailsView(discord.ui.View):
 
 #----------------------------------------------------------VIEW COMMAND-------------------------------------------------------------------------------------
 
-async def card_autocomplete(interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:
-    # 1. If the user hasn't typed much, return nothing (or top rated cards)
+async def card_search_autocomplete(interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:
     if not current:
         return []
 
-    # 2. Filter the global 'all_cards' list
-    # We look for cards where the name contains the search term
-    # We limit to 25 results because that is the Discord API limit
     matches = []
     count = 0
     
     for card in all_cards:
+        # Check if search term is in name (case insensitive)
         if current.lower() in card.name.lower():
             matches.append(card)
             count += 1
-            if count == 25: # Strict limit by Discord
+            if count == 25: # Discord limit
                 break
 
-    # 3. Format the results like the image: "Name - Details"
     return [
         discord.app_commands.Choice(
             name=f"{card.name} | ⭐ {card.overall} | {card.card_type}", 
-            value=str(card.card_id) # The logic uses ID, the user sees Name
+            value=str(card.card_id) # Pass the ID as the value
         )
         for card in matches
     ]
@@ -1469,18 +1465,18 @@ async def card_autocomplete(interaction: discord.Interaction, current: str) -> L
 
 
 @bot.hybrid_command(name='view', description="View details of a card")
-@app_commands.describe(identifier="Search for a player name...")
-@app_commands.autocomplete(identifier=card_autocomplete) # <--- Connects the search logic
-async def view(ctx, *, identifier: str):
+@app_commands.describe(player_name="Search for a player...")
+@app_commands.autocomplete(player_name=card_search_autocomplete)
+async def view(ctx, *, player_name: str):
     ensure_player_exists(ctx.author.id, ctx.author.name)
     
-    # 1. Check if the input is a direct Card ID (which comes from the Autocomplete click)
-    if identifier.isdigit():
-        card = get_card_by_id(int(identifier))
+    # 1. Check if input is a Card ID (from Autocomplete or manual ID)
+    if player_name.isdigit():
+        card = get_card_by_id(int(player_name))
         cards = [card] if card else []
     else:
-        # 2. Fallback: If they typed a name but didn't click the menu
-        cards = get_card_by_name_or_id(identifier)
+        # 2. Fallback: Search by name text
+        cards = get_card_by_name_or_id(player_name)
     
     if cards:
         if len(cards) == 1:
@@ -1489,7 +1485,6 @@ async def view(ctx, *, identifier: str):
             conn = sqlite3.connect('cards_game.db')
             cursor = conn.cursor()
             
-            # --- FETCH STATS ---
             cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
             inventory_entry = cursor.fetchone()
             
@@ -1512,7 +1507,6 @@ async def view(ctx, *, identifier: str):
             
             conn.close()
             
-            # --- BUILD EMBED ---
             owned_by_user = "Yes" if inventory_entry else "No"
             win_rate = f"{(g_b_won / g_b_played * 100):.1f}%" if g_b_played > 0 else "0%"
 
@@ -1540,11 +1534,10 @@ async def view(ctx, *, identifier: str):
             logger.info(f'{ctx.author.name} viewed card {card.name}')
 
         else:
-            # Multiple results found (user typed text but didn't pick from dropdown)
             view = ViewCardSelectView(cards, ctx.author, ctx)
             await ctx.send("Multiple cards found, please select one:", view=view)
     else:
-        await ctx.send(f'No card found with the identifier {identifier}')
+        await ctx.send(f'No card found matching "{player_name}"')
 
 
 
@@ -1680,12 +1673,26 @@ def generate_minted_card(card_path, avatar_bytes, owner_name, edition_text):
 
 
 @bot.hybrid_command(name='lookup', aliases=['lu'], description="Inspect a specific card owned by a user (Visual Slab)")
-async def lookup(ctx, card_id: int, user: discord.User = None):
+@app_commands.describe(card="Search for the card to inspect...")
+@app_commands.autocomplete(card=card_search_autocomplete)
+async def lookup(ctx, card: str, user: discord.User = None):
+    # Defer immediately as image generation can take time
     await ctx.defer()
 
     target_user = user or ctx.author
     ensure_player_exists(target_user.id, target_user.name)
 
+    # 1. Resolve Card ID
+    if card.isdigit():
+        card_id_int = int(card)
+    else:
+        # If they typed a name blindly without clicking (rare), try to find it
+        found_card = get_card_by_name(card)
+        if not found_card:
+            return await ctx.send(f"❌ Could not find card: {card}")
+        card_id_int = found_card.card_id
+
+    # 2. Database Check
     conn = sqlite3.connect('cards_game.db')
     cursor = conn.cursor()
     
@@ -1696,20 +1703,21 @@ async def lookup(ctx, card_id: int, user: discord.User = None):
         FROM inventories i
         JOIN cards c ON i.card_id = c.card_id
         WHERE i.user_id = ? AND i.card_id = ?
-    ''', (target_user.id, card_id))
+    ''', (target_user.id, card_id_int))
     
     result = cursor.fetchone()
     conn.close()
 
+    # 3. Handle "User doesn't own it"
     if not result:
-        return await ctx.send(f"❌ **{target_user.name}** does not own Card ID `{card_id}`.")
+        return await ctx.send(f"❌ **{target_user.name}** does not own Card ID `{card_id_int}`.")
 
+    # 4. Success - Generate Image
     name, overall, atk, def_, spd, rarity, type_, image_path, total_copies, edition, b_played, b_won, r_played, r_won = result
     
     edition_str = f"#{edition}/{total_copies}"
     win_rate = f"{(b_won / b_played * 100):.1f}%" if b_played > 0 else "0%"
 
-    # --- GENERATE IMAGE ---
     try:
         avatar_bytes = await target_user.display_avatar.read()
     except:
@@ -1727,16 +1735,13 @@ async def lookup(ctx, card_id: int, user: discord.User = None):
     if not image_buffer:
         return await ctx.send("❌ Error generating card image.")
 
-    file = discord.File(fp=image_buffer, filename=f"minted_{card_id}.png")
+    file = discord.File(fp=image_buffer, filename=f"minted_{card_id_int}.png")
     
-    # --- BUILD EMBED ---
     embed = discord.Embed(title=f"🔍 Card Inspection: {name}", color=discord.Color.gold())
     embed.set_author(name=f"Property of {target_user.name}", icon_url=target_user.display_avatar.url)
     
-    embed.add_field(name="Mint Details", value=f"🆔 **ID:** {card_id}\n#️⃣ **Edition:** {edition_str}", inline=True)
+    embed.add_field(name="Mint Details", value=f"🆔 **ID:** {card_id_int}\n#️⃣ **Edition:** {edition_str}", inline=True)
     embed.add_field(name="Card Info", value=f"💎 {rarity}\n🏆 {type_}", inline=True)
-    
-    # Renamed to Base Stats
     embed.add_field(name="Base Stats", value=f"⭐ **{overall}** | ⚔️ {atk} | 🛡️ {def_} | ⚡ {spd}", inline=False)
     
     stats_text = (
@@ -1746,7 +1751,6 @@ async def lookup(ctx, card_id: int, user: discord.User = None):
     embed.add_field(name="Match Record (This Copy)", value=stats_text, inline=False)
 
     await ctx.send(file=file, embed=embed)
-
 
 #---------------------------------------------------------DROPS-------------------------------------------------------------------------------------
 
