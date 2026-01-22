@@ -293,6 +293,45 @@ async def help_command(ctx):
     
     view = HelpView()
     await ctx.send(embed=embed, view=view)
+
+class ChangelogView(discord.ui.View):
+    def __init__(self, data):
+        super().__init__(timeout=120)
+        self.data = data
+        self.current_page = 0
+        self.items_per_page = 10 # Adjust this number to fit more/less per page
+        self.total_pages = max(1, (len(data) - 1) // self.items_per_page + 1)
+        self.update_buttons()
+
+    def get_embed(self):
+        start = self.current_page * self.items_per_page
+        end = start + self.items_per_page
+        page_items = self.data[start:end]
+        
+        # Format the list into a code block string
+        text_content = "\n".join(page_items)
+        
+        embed = discord.Embed(title="📜 Bot Changelog", color=discord.Color.blue())
+        embed.description = f"```\n{text_content}\n```"
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages} | Version {BOT_VERSION}")
+        return embed
+
+    def update_buttons(self):
+        # Enable/Disable buttons based on current page
+        self.children[0].disabled = (self.current_page == 0) # Prev button
+        self.children[1].disabled = (self.current_page == self.total_pages - 1) # Next button
+
+    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.primary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page -= 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.primary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page += 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
 #---------------------------------------------------------ABOUT-------------------------------------------------------------------------------------
 
 
@@ -300,32 +339,37 @@ async def help_command(ctx):
 BOT_VERSION = "1.4.3"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
-CHANGELOG = ['''1.0.0 - Initial realease 
-1.1.0- Added Shop and Sell functions. Multiple minor patches.
-1.1.1- Fixed minor bugs and added hero cards.
-1.2.0- Battle UI overhaul
-1.2.1- Deck Lineup UI
-1.2.2- 30 min card drop logic fix
-1.2.3- fdrop updates
-1.2.4- Added Draws
-1.2.5- Added Slash Commands
-1.2.6- Fixed slash command bugs
-1.3.0- Inventory Control Fixes
-1.3.1- Inventory Sort & Filter
-1.3.2- Drop command fixes
-1.3.3- Exchange command added 
-1.3.4- Help Menu Upgrade
-1.3.5- More Filters Added
-1.3.6- Catalog Command Added
-1.3.7- Beauty Enhancements
-1.3.8- Global & Server Leaderboards
-1.3.9- Lookup Command Added
-1.3.10- Lookup Mint Card Image Generation
-1.4.0- Wishlist System Added
-1.4.1- More Card Stats Tracking 
-1.4.2- Added build_deck command
-1.4.3- Fixed last round not showing in battles
-1.4.4- Better leaderboard commands''']
+# Sorted Newest to Oldest for better UX
+CHANGELOG_DATA = [
+    "1.4.5 - Fixed changelog spanning multiple pages",
+    "1.4.4- Better leaderboard commands",
+    "1.4.3 - Fixed last round not showing in battles",
+    "1.4.2 - Added build_deck command",
+    "1.4.1 - More Card Stats Tracking",
+    "1.4.0 - Wishlist System Added",
+    "1.3.10 - Lookup Mint Card Image Generation",
+    "1.3.9 - Lookup Command Added",
+    "1.3.8 - Global & Server Leaderboards",
+    "1.3.7 - Beauty Enhancements",
+    "1.3.6 - Catalog Command Added",
+    "1.3.5 - More Filters Added",
+    "1.3.4 - Help Menu Upgrade",
+    "1.3.3 - Exchange command added",
+    "1.3.2 - Drop command fixes",
+    "1.3.1 - Inventory Sort & Filter",
+    "1.3.0 - Inventory Control Fixes",
+    "1.2.6 - Fixed slash command bugs",
+    "1.2.5 - Added Slash Commands",
+    "1.2.4 - Added Draws",
+    "1.2.3 - fdrop updates",
+    "1.2.2 - 30 min card drop logic fix",
+    "1.2.1 - Deck Lineup UI",
+    "1.2.0 - Battle UI overhaul",
+    "1.1.1 - Fixed minor bugs and added hero cards",
+    "1.1.0 - Added Shop and Sell functions. Multiple minor patches.",
+    "1.0.0 - Initial release"
+]
+
 # Existing commands like !daily, !drop, !view, etc.
 
 @bot.hybrid_command(name='about', description="About this bot")
@@ -347,10 +391,8 @@ async def version(ctx):
 
 @bot.hybrid_command(name='changelog', description="Check recent changes")
 async def changelog(ctx):
-    embed = discord.Embed(title="Changelog")
-    changelog_text = "\n".join([f"```{entry}```" for entry in CHANGELOG])
-    embed.add_field(name="Changes", value=changelog_text, inline=False)
-    await ctx.send(embed=embed)
+    view = ChangelogView(CHANGELOG_DATA)
+    await ctx.send(embed=view.get_embed(), view=view)
 
 
 #---------------------------------------------------------SUGGESTIONS-------------------------------------------------------------------------------------
@@ -3795,20 +3837,23 @@ async def buy(ctx, pack_id: int):
         return
 
     pack = PACKS[pack_id]
-    if pack.get("special", False):  # Prevent buying special packs
-        await ctx.send("This pack cannot be bought.")
+
+    # --- FIX: Check the 'buyable' key properly ---
+    if not pack["buyable"]:
+        await ctx.send("⛔ This pack cannot be purchased.")
         return
+    # ---------------------------------------------
 
     pack_name = pack["name"]
     cost = pack["cost"]
 
     if not has_sufficient_coins(user_id, cost):
-        await ctx.send("You don't have enough coins to buy this pack.")
+        await ctx.send(f"You need **{cost}** coins to buy this pack.")
         return
     
     deduct_coins(user_id, cost)
     add_pack_to_user(user_id, pack['name'])
-    await ctx.send(f"You have bought a {pack['display_name']}.")
+    await ctx.send(f"✅ You have bought a **{pack['display_name']}** for {cost} coins.")
     logger.info(f"User {ctx.author.name} bought a {pack['display_name']} pack.")
 
 @bot.hybrid_command(name='packs', description="View your unopened packs")
