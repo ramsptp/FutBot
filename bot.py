@@ -3791,32 +3791,63 @@ class DeclineButton(Button):
 
 
 @bot.hybrid_command(name='sell', description="Sell a card for coins")
-async def sell(ctx, card_id: int):
-    card = get_card_by_id(card_id)
-    if not card or not check_card_ownership(ctx.author.id, card_id):  # Check if the card exists and belongs to the user
-        await ctx.send("You don't own this card.")
+@app_commands.describe(card="Search for the card you want to sell...")
+@app_commands.autocomplete(card=card_search_autocomplete)
+async def sell(ctx, card: str):
+    # 1. Resolve Card ID (Handle both ID numbers and Autocomplete strings)
+    if card.isdigit():
+        card_id = int(card)
+    else:
+        # Fallback for text commands like "!sell Messi"
+        found_card = get_card_by_name(card)
+        if not found_card:
+            return await ctx.send(f"❌ Could not find card: {card}")
+        card_id = found_card.card_id
+
+    # 2. Get Card Object & Verify Existence
+    card_obj = get_card_by_id(card_id)
+    if not card_obj:
+        return await ctx.send("❌ Card not found in database.")
+    
+    # 3. Security: Check Ownership
+    if not check_card_ownership(ctx.author.id, card_id):
+        await ctx.send(f"⛔ You don't own **{card_obj.name}** (ID: {card_id}).")
         return
     
-    # Calculate the sale value
-    card_type = card.card_type
-    overall = card.overall
-    sale_value = 100 if card_type == "standard" else 250 if card_type == "icon" else 0
-    sale_value += 50 + ((overall - 70) * 5) if overall >= 70 else 0
+    # 4. Calculate Sale Value
+    card_type = card_obj.card_type.lower() # Case-insensitive check
+    overall = card_obj.overall
+    
+    # Base Value
+    if "icon" in card_type:
+        sale_value = 250
+    elif "hero" in card_type:
+        sale_value = 175
+    else:
+        sale_value = 100
+        
+    # Overall Multiplier
+    if overall >= 70:
+        sale_value += 50 + ((overall - 70) * 5)
 
-    content = f'{ctx.author.mention}, do you want to sell this card for {sale_value} coins?'
-    embed = discord.Embed(title="Sell Card")
-    embed.add_field(name="Name", value=card.name, inline=True)
-    embed.add_field(name="ID", value=card.card_id, inline=True)
-    embed.add_field(name="Type", value=card_type, inline=True)
-    embed.add_field(name="Overall", value=overall, inline=True)
-    embed.add_field(name="Sale Value", value=sale_value, inline=True)
-    embed.set_image(url=f"attachment://{card.image_path.split('/')[-1]}")
+    # 5. Send Confirmation Menu
+    content = f'{ctx.author.mention}, confirm sale of **{card_obj.name}**?'
+    embed = discord.Embed(title="💰 Sell Offer", color=discord.Color.gold())
+    embed.add_field(name="Card", value=f"{card_obj.name}\nID: {card_obj.card_id}", inline=True)
+    embed.add_field(name="Sale Price", value=f"**{sale_value}** Coins", inline=True)
     
-    view = View(timeout=60)
-    view.add_item(ConfirmButton(card, ctx.author.id, sale_value))
-    view.add_item(DeclineButton())
-    
-    await ctx.send(content=content, embed=embed, view=view, file=discord.File(card.image_path))
+    # Use image logic consistent with other commands
+    try:
+        file = discord.File(card_obj.image_path)
+        embed.set_image(url=f"attachment://{card_obj.image_path.split('/')[-1]}")
+        
+        view = View(timeout=60)
+        view.add_item(ConfirmButton(card_obj, ctx.author.id, sale_value))
+        view.add_item(DeclineButton())
+        
+        await ctx.send(content=content, embed=embed, view=view, file=file)
+    except Exception as e:
+        await ctx.send(f"Error loading card image: {e}")
 
 
 #---------------------------------------------------------PACKS-------------------------------------------------------------------------------------
