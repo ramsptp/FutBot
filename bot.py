@@ -12,6 +12,8 @@ import time
 import os
 from dotenv import load_dotenv
 from typing import Literal
+from discord import app_commands
+from typing import List
 
 
 
@@ -1435,11 +1437,50 @@ class CardDetailsView(discord.ui.View):
 
 
 
+#----------------------------------------------------------VIEW COMMAND-------------------------------------------------------------------------------------
+
+async def card_autocomplete(interaction: discord.Interaction, current: str) -> List[discord.app_commands.Choice[str]]:
+    # 1. If the user hasn't typed much, return nothing (or top rated cards)
+    if not current:
+        return []
+
+    # 2. Filter the global 'all_cards' list
+    # We look for cards where the name contains the search term
+    # We limit to 25 results because that is the Discord API limit
+    matches = []
+    count = 0
+    
+    for card in all_cards:
+        if current.lower() in card.name.lower():
+            matches.append(card)
+            count += 1
+            if count == 25: # Strict limit by Discord
+                break
+
+    # 3. Format the results like the image: "Name - Details"
+    return [
+        discord.app_commands.Choice(
+            name=f"{card.name} | ⭐ {card.overall} | {card.card_type}", 
+            value=str(card.card_id) # The logic uses ID, the user sees Name
+        )
+        for card in matches
+    ]
+
+
 
 @bot.hybrid_command(name='view', description="View details of a card")
+@app_commands.describe(identifier="Search for a player name...")
+@app_commands.autocomplete(identifier=card_autocomplete) # <--- Connects the search logic
 async def view(ctx, *, identifier: str):
     ensure_player_exists(ctx.author.id, ctx.author.name)
-    cards = get_card_by_name_or_id(identifier)
+    
+    # 1. Check if the input is a direct Card ID (which comes from the Autocomplete click)
+    if identifier.isdigit():
+        card = get_card_by_id(int(identifier))
+        cards = [card] if card else []
+    else:
+        # 2. Fallback: If they typed a name but didn't click the menu
+        cards = get_card_by_name_or_id(identifier)
     
     if cards:
         if len(cards) == 1:
@@ -1448,12 +1489,10 @@ async def view(ctx, *, identifier: str):
             conn = sqlite3.connect('cards_game.db')
             cursor = conn.cursor()
             
-            # 1. Get Ownership
+            # --- FETCH STATS ---
             cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
             inventory_entry = cursor.fetchone()
             
-            # 2. Get Global Stats (Updated Query)
-            # Now fetching Rounds stats as well
             cursor.execute('''
                 SELECT wishlist_count, 
                        total_battles_played, total_battles_won, 
@@ -1462,41 +1501,31 @@ async def view(ctx, *, identifier: str):
             ''', (card.card_id,))
             
             row = cursor.fetchone()
-            # Safety defaults
             wl_count = row[0] if row else 0
             g_b_played = row[1] if row else 0
             g_b_won = row[2] if row else 0
             g_r_played = row[3] if row else 0
             g_r_won = row[4] if row else 0
             
-            # 3. Check Wishlist State
             cursor.execute('SELECT 1 FROM wishlists WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
             is_wishlisted = cursor.fetchone() is not None
             
             conn.close()
             
+            # --- BUILD EMBED ---
             owned_by_user = "Yes" if inventory_entry else "No"
-            
-            # Calculate Win Rate
             win_rate = f"{(g_b_won / g_b_played * 100):.1f}%" if g_b_played > 0 else "0%"
 
             embed = discord.Embed(title=f"**{card.name}**", color=discord.Color.blue())
-            
-            # Field 1: Core Info
             embed.add_field(name="Info", value=f"🆔 {card.card_id}\n💎 {card.card_rarity}\n🏆 {card.card_type}", inline=True)
-            
-            # Field 2: Base Stats (Single Line, Overall First)
             embed.add_field(name="Base Stats", value=f"⭐ **{card.overall}** | ⚔️ {card.attack} | 🛡️ {card.defense} | ⚡ {card.speed}", inline=True)
             
-            # Field 3: Global Performance (Detailed)
             meta_stats = (
                 f"❤️ **{wl_count}** Wishlists\n"
                 f"⚔️ **Battles:** {g_b_won}/{g_b_played} ({win_rate})\n"
                 f"🔄 **Rounds:** {g_r_won}/{g_r_played}"
             )
             embed.add_field(name="Global Statistics", value=meta_stats, inline=False)
-            
-            # Removed Bio Details (Height, Club, etc.) as requested
             
             if owned_by_user == "Yes":
                 trade_count = inventory_entry[0]
@@ -1509,9 +1538,9 @@ async def view(ctx, *, identifier: str):
             await ctx.send(embed=embed, file=discord.File(card.image_path), view=view)
             
             logger.info(f'{ctx.author.name} viewed card {card.name}')
-        # ... inside 'view' command ...
+
         else:
-            # Pass ctx here ----------------------v
+            # Multiple results found (user typed text but didn't pick from dropdown)
             view = ViewCardSelectView(cards, ctx.author, ctx)
             await ctx.send("Multiple cards found, please select one:", view=view)
     else:
