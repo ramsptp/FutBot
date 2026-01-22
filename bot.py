@@ -338,13 +338,14 @@ class ChangelogView(discord.ui.View):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.4.3"
+BOT_VERSION = "1.4.6"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 # Sorted Newest to Oldest for better UX
 CHANGELOG_DATA = [
+    "1.4.6 - Added autocomplete for view, lookup and sell commands.",
     "1.4.5 - Fixed changelog spanning multiple pages",
-    "1.4.4- Better leaderboard commands",
+    "1.4.4 - Better leaderboard commands",
     "1.4.3 - Fixed last round not showing in battles",
     "1.4.2 - Added build_deck command",
     "1.4.1 - More Card Stats Tracking",
