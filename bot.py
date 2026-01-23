@@ -3791,65 +3791,275 @@ class DeclineButton(Button):
         await interaction.response.edit_message(content="The sale has been declined.", view=None)
 
 
-@bot.hybrid_command(name='sell', description="Sell a card for coins")
-@app_commands.describe(card="Search for the card you want to sell...")
-@app_commands.autocomplete(card=card_search_autocomplete)
-async def sell(ctx, card: str):
-    # 1. Resolve Card ID (Handle both ID numbers and Autocomplete strings)
-    if card.isdigit():
-        card_id = int(card)
-    else:
-        # Fallback for text commands like "!sell Messi"
-        found_card = get_card_by_name(card)
-        if not found_card:
-            return await ctx.send(f"❌ Could not find card: {card}")
-        card_id = found_card.card_id
-
-    # 2. Get Card Object & Verify Existence
-    card_obj = get_card_by_id(card_id)
-    if not card_obj:
-        return await ctx.send("❌ Card not found in database.")
-    
-    # 3. Security: Check Ownership
-    if not check_card_ownership(ctx.author.id, card_id):
-        await ctx.send(f"⛔ You don't own **{card_obj.name}** (ID: {card_id}).")
-        return
-    
-    # 4. Calculate Sale Value
-    card_type = card_obj.card_type.lower() # Case-insensitive check
-    overall = card_obj.overall
+def calculate_card_value(card):
+    """Calculates the sell price of a card."""
+    card_type = card.card_type.lower()
+    overall = card.overall
     
     # Base Value
     if "icon" in card_type:
-        sale_value = 250
+        value = 250
     elif "hero" in card_type:
-        sale_value = 175
+        value = 175
     else:
-        sale_value = 100
+        value = 100
         
     # Overall Multiplier
     if overall >= 70:
-        sale_value += 50 + ((overall - 70) * 5)
+        value += 50 + ((overall - 70) * 5)
+        
+    return int(value)
 
-    # 5. Send Confirmation Menu
-    content = f'{ctx.author.mention}, confirm sale of **{card_obj.name}**?'
-    embed = discord.Embed(title="💰 Sell Offer", color=discord.Color.gold())
-    embed.add_field(name="Card", value=f"{card_obj.name}\nID: {card_obj.card_id}", inline=True)
-    embed.add_field(name="Sale Price", value=f"**{sale_value}** Coins", inline=True)
+
+@bot.hybrid_command(name='sell', description="Sell cards for coins. Use arguments to quick-select.")
+@app_commands.describe(
+    card1="Optional: First card to sell",
+    card2="Optional: Second card to sell",
+    card3="Optional: Third card to sell",
+    card4="Optional: Fourth card to sell",
+    card5="Optional: Fifth card to sell"
+)
+@app_commands.autocomplete(
+    card1=card_search_autocomplete,
+    card2=card_search_autocomplete,
+    card3=card_search_autocomplete,
+    card4=card_search_autocomplete,
+    card5=card_search_autocomplete
+)
+async def sell(ctx, card1: str = None, card2: str = None, card3: str = None, card4: str = None, card5: str = None):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
     
-    # Use image logic consistent with other commands
-    try:
-        file = discord.File(card_obj.image_path)
-        embed.set_image(url=f"attachment://{card_obj.image_path.split('/')[-1]}")
-        
-        view = View(timeout=60)
-        view.add_item(ConfirmButton(card_obj, ctx.author.id, sale_value))
-        view.add_item(DeclineButton())
-        
-        await ctx.send(content=content, embed=embed, view=view, file=file)
-    except Exception as e:
-        await ctx.send(f"Error loading card image: {e}")
+    # 1. Fetch Inventory
+    inventory, editions = get_player_inventory(ctx.author.id)
+    if not inventory:
+        return await ctx.send("You have no cards to sell!")
 
+    # 2. Process Arguments (Resolve inputs to IDs)
+    inputs = [card1, card2, card3, card4, card5]
+    pre_selected_ids = []
+    
+    # Map IDs to inventory items for validation
+    inventory_map = {c.card_id: c for c in inventory}
+    
+    warnings = []
+
+    for item in inputs:
+        if not item: continue
+        
+        target_id = None
+        
+        # A. Check if Autocomplete ID
+        if item.isdigit():
+            target_id = int(item)
+        else:
+            # B. Check if Manual Text Name
+            found = get_card_by_name(item)
+            if found:
+                target_id = found.card_id
+        
+        # Validation
+        if target_id:
+            if target_id in inventory_map:
+                if target_id not in pre_selected_ids:
+                    pre_selected_ids.append(target_id)
+            else:
+                warnings.append(f"You don't own ID {target_id} (or input '{item}')")
+        else:
+            warnings.append(f"Could not find card '{item}'")
+
+    # 3. Launch UI
+    view = MultiSellView(ctx, inventory, initial_ids=pre_selected_ids)
+    
+    embed = discord.Embed(title="🏪 Sell Menu", color=discord.Color.gold())
+    embed.add_field(name="Loading...", value="Preparing your sell offer...", inline=False)
+    
+    if warnings:
+        embed.set_footer(text=f"⚠️ Warning: {', '.join(warnings[:3])}")
+    
+    msg = await ctx.send(embed=embed, view=view)
+    view.message = msg
+    
+    # Force immediate update to show pre-selected items
+    await view.update_display(ctx.interaction if ctx.interaction else None)
+
+# ---------------------------------------------------------UNIFIED SELL MENU-------------------------------------------------------------------------------------
+
+class MultiSellSelect(discord.ui.Select):
+    def __init__(self, page_cards, selected_ids):
+        options = []
+        for card in page_cards:
+            is_selected = card.card_id in selected_ids
+            value = calculate_card_value(card)
+            
+            # Formatting: "✅ Messi" vs "Messi"
+            label = f"{'✅ ' if is_selected else ''}{card.name}"
+            desc = f"Sell for: {value} coins | OVR: {card.overall}"
+            
+            options.append(discord.SelectOption(
+                label=label, 
+                description=desc, 
+                value=str(card.card_id),
+                emoji="💰"
+            ))
+
+        super().__init__(
+            placeholder="Select cards to add/remove...",
+            min_values=1,
+            max_values=1, 
+            options=options,
+            row=0
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        card_id = int(self.values[0])
+        
+        # Toggle: If in list, remove it. If not, add it.
+        if card_id in view.selected_ids:
+            view.selected_ids.remove(card_id)
+        else:
+            view.selected_ids.append(card_id)
+
+        await view.update_display(interaction)
+
+class MultiSellView(discord.ui.View):
+    def __init__(self, ctx, inventory, initial_ids=None):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.inventory = inventory
+        
+        # Pre-load the cart with cards from command arguments
+        self.selected_ids = initial_ids if initial_ids else []
+        
+        self.current_page = 0
+        self.items_per_page = 20
+        self.total_pages = max(1, (len(inventory) - 1) // self.items_per_page + 1)
+        
+        # Determine starting page (try to show the first selected card if possible)
+        if self.selected_ids:
+            first_selected = self.selected_ids[0]
+            for i, card in enumerate(inventory):
+                if card.card_id == first_selected:
+                    self.current_page = i // self.items_per_page
+                    break
+
+        self.update_components()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("⛔ This is not your menu.", ephemeral=True)
+            return False
+        return True
+
+    def get_page_items(self):
+        start = self.current_page * self.items_per_page
+        end = start + self.items_per_page
+        return self.inventory[start:end]
+
+    def update_components(self):
+        self.clear_items()
+        
+        # 1. Dropdown
+        page_cards = self.get_page_items()
+        if page_cards:
+            self.add_item(MultiSellSelect(page_cards, self.selected_ids))
+
+        # 2. Navigation
+        if self.current_page > 0:
+            self.add_item(BuilderPrevButton()) 
+        if self.current_page < self.total_pages - 1:
+            self.add_item(BuilderNextButton())
+
+        # 3. Actions
+        # Enable Confirm button only if at least 1 card is selected
+        self.add_item(MultiSellConfirmButton(disabled=(len(self.selected_ids) == 0)))
+        self.add_item(BuilderCancelButton())
+
+    async def update_display(self, interaction):
+        self.update_components()
+        
+        # Calculate Totals
+        total_value = 0
+        selected_count = len(self.selected_ids)
+        
+        # Generate Display List
+        if selected_count > 0:
+            item_list = []
+            for cid in self.selected_ids:
+                card = next((c for c in self.inventory if c.card_id == cid), None)
+                if card:
+                    val = calculate_card_value(card)
+                    total_value += val
+                    item_list.append(f"• **{card.name}** ({val}c)")
+            
+            # Show last 10 items
+            display_str = "\n".join(item_list[-10:])
+            if len(item_list) > 10:
+                display_str += f"\n...and {len(item_list)-10} more"
+        else:
+            display_str = "*No cards selected. Use the dropdown or type card names in the command.*"
+
+        embed = discord.Embed(title="🏪 Sell Menu", color=discord.Color.gold())
+        embed.add_field(name=f"Shopping Cart ({selected_count})", value=display_str, inline=False)
+        embed.add_field(name="Total Payout", value=f"💰 **{total_value:,}** Coins", inline=False)
+        embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages}")
+
+        if interaction and not interaction.response.is_done():
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await self.message.edit(embed=embed, view=self)
+
+class MultiSellConfirmButton(discord.ui.Button):
+    def __init__(self, disabled=True):
+        style = discord.ButtonStyle.grey if disabled else discord.ButtonStyle.green
+        label = "Select Cards..." if disabled else "Confirm Sale"
+        emoji = "💵"
+        super().__init__(label=label, style=style, emoji=emoji, disabled=disabled, row=2)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        user_id = interaction.user.id
+        
+        total_coins = 0
+        count = 0
+        
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        
+        try:
+            for cid in view.selected_ids:
+                # 1. Verify Ownership
+                cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (user_id, cid))
+                if not cursor.fetchone(): continue
+                
+                # 2. Get Value
+                card_obj = next((c for c in view.inventory if c.card_id == cid), None)
+                if not card_obj: continue
+                
+                val = calculate_card_value(card_obj)
+                total_coins += val
+                count += 1
+                
+                # 3. Delete & Update
+                cursor.execute('DELETE FROM inventories WHERE user_id = ? AND card_id = ?', (user_id, cid))
+                cursor.execute('UPDATE players SET cards_sold = cards_sold + 1 WHERE user_id = ?', (user_id,))
+            
+            # 4. Give Coins
+            cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (total_coins, user_id))
+            conn.commit()
+            
+            embed = discord.Embed(title="✅ Sale Complete!", color=discord.Color.green())
+            embed.description = f"You sold **{count}** cards for **{total_coins:,}** coins."
+            
+            await interaction.response.edit_message(embed=embed, view=None)
+            view.stop()
+            logger.info(f"{interaction.user.name} sold {count} cards for {total_coins}")
+            
+        except Exception as e:
+            logger.error(f"Sell Error: {e}")
+            await interaction.response.send_message("❌ Database error.", ephemeral=True)
+        finally:
+            conn.close()
 
 #---------------------------------------------------------PACKS-------------------------------------------------------------------------------------
 
