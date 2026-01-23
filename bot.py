@@ -2873,6 +2873,94 @@ class ExchangeAddCardModal(discord.ui.Modal, title="Add Card to Exchange"):
         
         await self.exchange_view.update_display(interaction)
 
+# 1. The Dropdown to Pick the Card (After Searching)
+class ExchangeCardSearchSelect(discord.ui.Select):
+    def __init__(self, cards, view, side):
+        self.exchange_view = view
+        self.side = side # 'p1' or 'p2'
+        
+        options = []
+        for card in cards[:25]: # Discord limit
+            options.append(discord.SelectOption(
+                label=card.name,
+                description=f"ID: {card.card_id} | ⭐ {card.overall}",
+                value=str(card.card_id)
+            ))
+            
+        super().__init__(placeholder="Select the card to add...", min_values=1, max_values=1, options=options)
+
+    # In ExchangeCardSearchSelect class
+    async def callback(self, interaction: discord.Interaction):
+        card_id = int(self.values[0])
+        user = interaction.user
+        
+        # ... (Keep your ownership/duplicate checks here) ...
+        # 1. Ownership Check
+        if not check_card_ownership(user.id, card_id):
+            return await interaction.response.send_message("❌ You no longer own this card.", ephemeral=True)
+
+        # 2. Duplicate Check
+        opponent = self.exchange_view.session.p2 if self.side == 'p1' else self.exchange_view.session.p1
+        if check_card_ownership(opponent.id, card_id):
+             return await interaction.response.send_message(f"⛔ **{opponent.name}** already owns this card!", ephemeral=True)
+
+        # 3. Add to Offer
+        card = get_card_by_id(card_id)
+        current_offer = self.exchange_view.session.p1_offer['cards'] if self.side == 'p1' else self.exchange_view.session.p2_offer['cards']
+        
+        if any(c.card_id == card.card_id for c in current_offer):
+            return await interaction.response.send_message("⚠️ You already added this card.", ephemeral=True)
+
+        current_offer.append(card)
+        
+        # Reset locks
+        self.exchange_view.session.p1_locked = False
+        self.exchange_view.session.p2_locked = False
+        self.exchange_view.session.p1_confirmed = False
+        self.exchange_view.session.p2_confirmed = False
+        
+        # --- THE FIX ---
+        # 1. Update the MAIN table (Public)
+        # We pass None so it edits self.message directly
+        await self.exchange_view.update_display(interaction=None)
+        
+        # 2. Update the USER (Private)
+        # We use the interaction to reply to the dropdown click
+        await interaction.response.send_message(f"✅ Added **{card.name}** to the exchange.", ephemeral=True)
+
+# 2. The Search Modal
+class ExchangeSearchModal(discord.ui.Modal, title="Search your Inventory"):
+    query = discord.ui.TextInput(label="Card Name", placeholder="e.g. Messi")
+
+    def __init__(self, view, side):
+        super().__init__()
+        self.exchange_view = view
+        self.side = side
+
+    async def on_submit(self, interaction: discord.Interaction):
+        search_term = self.query.value.lower()
+        user_id = interaction.user.id
+        
+        # Fetch user inventory
+        inventory, _ = get_player_inventory(user_id)
+        
+        # Filter matches
+        matches = [c for c in inventory if search_term in c.name.lower()]
+        
+        if not matches:
+            return await interaction.response.send_message("❌ No cards found matching that name.", ephemeral=True)
+
+        # Show Dropdown (Ephemeral)
+        view = discord.ui.View()
+        view.add_item(ExchangeCardSearchSelect(matches, self.exchange_view, self.side))
+        
+        await interaction.response.send_message(
+            f"🔍 Found {len(matches)} cards matching '**{self.query.value}**'. Select one below:", 
+            view=view, 
+            ephemeral=True
+        )
+
+
 class ExchangeView(discord.ui.View):
     def __init__(self, ctx, p1, p2):
         super().__init__(timeout=300)
@@ -2921,9 +3009,13 @@ class ExchangeView(discord.ui.View):
             self.add_item(ExConfirmButton())
             self.add_item(ExCancelButton())
 
-        if interaction.response.is_done():
+        if interaction is None:
+            # Called from a different context (like the search menu) -> Edit message directly
+            await self.message.edit(embed=embed, view=self)
+        elif interaction.response.is_done():
             await self.message.edit(embed=embed, view=self)
         else:
+            # Called from a button on the menu itself -> Edit response
             await interaction.response.edit_message(embed=embed, view=self)
 
     async def execute_exchange(self, interaction):
@@ -3006,12 +3098,18 @@ class ExchangeView(discord.ui.View):
 # --- EXCHANGE BUTTONS ---
 
 class ExAddCardButton(discord.ui.Button):
-    def __init__(self): super().__init__(label="Add Card", style=discord.ButtonStyle.primary, emoji="🃏", row=0)
+    def __init__(self): 
+        super().__init__(label="Add Card", style=discord.ButtonStyle.primary, emoji="🃏", row=0)
+        
     async def callback(self, interaction):
         view = self.view
         side = 'p1' if interaction.user.id == view.session.p1.id else 'p2' if interaction.user.id == view.session.p2.id else None
-        if side: await interaction.response.send_modal(ExchangeAddCardModal(view, side))
-        else: await interaction.response.send_message("Not your session.", ephemeral=True)
+        
+        if side: 
+            # Open the new Search Modal
+            await interaction.response.send_modal(ExchangeSearchModal(view, side))
+        else: 
+            await interaction.response.send_message("Not your session.", ephemeral=True)
 
 class ExAddCoinsButton(discord.ui.Button):
     def __init__(self): super().__init__(label="Set Coins", style=discord.ButtonStyle.primary, emoji="💰", row=0)
@@ -3871,7 +3969,8 @@ async def sell(ctx, card1: str = None, card2: str = None, card3: str = None, car
     # 3. Launch UI
     view = MultiSellView(ctx, inventory, initial_ids=pre_selected_ids)
     
-    embed = discord.Embed(title="🏪 Sell Menu", color=discord.Color.gold())
+    # Inside the sell command...
+    embed = discord.Embed(title="📉 Transfer Market", description="Initializing...", color=discord.Color.blue())
     embed.add_field(name="Loading...", value="Preparing your sell offer...", inline=False)
     
     if warnings:
@@ -3991,18 +4090,19 @@ class MultiSellView(discord.ui.View):
                 if card:
                     val = calculate_card_value(card)
                     total_value += val
-                    item_list.append(f"• **{card.name}** ({val}c)")
+                    # Format: "Messi (94) • 150c"
+                    item_list.append(f"• **{card.name}** ({card.overall}) — {val:,} coins")
             
             # Show last 10 items
             display_str = "\n".join(item_list[-10:])
             if len(item_list) > 10:
                 display_str += f"\n...and {len(item_list)-10} more"
         else:
-            display_str = "*No cards selected. Use the dropdown or type card names in the command.*"
+            display_str = "*No assets selected.*"
 
-        embed = discord.Embed(title="🏪 Sell Menu", color=discord.Color.gold())
-        embed.add_field(name=f"Shopping Cart ({selected_count})", value=display_str, inline=False)
-        embed.add_field(name="Total Payout", value=f"💰 **{total_value:,}** Coins", inline=False)
+        embed = discord.Embed(title="📉 Transfer Market", color=discord.Color.blue())
+        embed.add_field(name=f"Selected Assets [{selected_count}]", value=display_str, inline=False)
+        embed.add_field(name="Transaction Value", value=f"**{total_value:,}** Coins", inline=False)
         embed.set_footer(text=f"Page {self.current_page + 1}/{self.total_pages}")
 
         if interaction and not interaction.response.is_done():
