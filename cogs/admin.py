@@ -5,6 +5,7 @@ Admin-only commands for managing users, cards, and bot operations
 import discord
 from discord.ext import commands
 import logging
+from datetime import datetime, timedelta
 
 from utils.database import (
     get_connection, ADMIN_IDS, 
@@ -15,11 +16,16 @@ from utils.models import get_card_by_id
 logger = logging.getLogger(__name__)
 
 
+#---------------------------------------------------------COG CLASS-------------------------------------------------------------------------------------
+
+
 class Admin(commands.Cog):
     """Admin commands for bot management"""
     
     def __init__(self, bot):
         self.bot = bot
+
+    #---------------------------------------------------------GIVE COINS-------------------------------------------------------------------------------------
 
     @commands.command(name='give_coins')
     async def give_coins(self, ctx, user_id: int, amount: int):
@@ -48,6 +54,8 @@ class Admin(commands.Cog):
         
         await ctx.send(f"Gave {amount} coins to user ID {user_id}.")
         logger.info(f"Admin {ctx.author.name} gave {amount} coins to user ID {user_id}.")
+
+    #---------------------------------------------------------GIVE CARD-------------------------------------------------------------------------------------
 
     @commands.command(name='give_card')
     async def give_card(self, ctx, user_id: int, card_id: int):
@@ -83,6 +91,8 @@ class Admin(commands.Cog):
         await ctx.send(f"Gave {card.name} to user ID {user_id}.")
         logger.info(f"Admin {ctx.author.name} gave card {card_id} to user ID {user_id}.")
 
+    #---------------------------------------------------------REMOVE CARD-------------------------------------------------------------------------------------
+
     @commands.command(name='remove_card')
     async def remove_card(self, ctx, user_id: int, card_id: int):
         """Remove a card from a user's inventory (Admin only)"""
@@ -99,6 +109,8 @@ class Admin(commands.Cog):
         await ctx.send(f"Removed card {card_id} from user ID {user_id}.")
         logger.info(f"Admin {ctx.author.name} removed card {card_id} from user ID {user_id}.")
 
+    #---------------------------------------------------------SYNC COMMANDS-------------------------------------------------------------------------------------
+
     @commands.command(name='sync')
     async def sync(self, ctx):
         """Sync slash commands globally (Admin only)"""
@@ -111,6 +123,8 @@ class Admin(commands.Cog):
             await ctx.send(f"✅ Synced {len(synced)} commands globally.")
         except Exception as e:
             await ctx.send(f"❌ Sync failed: {e}")
+
+    #---------------------------------------------------------TEST STREAK-------------------------------------------------------------------------------------
 
     @commands.hybrid_command(name='teststreak', description="[ADMIN] Set your daily streak for testing")
     async def teststreak(self, ctx, streak: int):
@@ -126,20 +140,15 @@ class Admin(commands.Cog):
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Set streak and set last_daily_claim to YESTERDAY so claiming today will continue the streak
+        yesterday = (datetime.now() - timedelta(days=1)).isoformat()
         cursor.execute('''
             UPDATE players 
-            SET daily_streak = ?, last_daily_claim = NULL 
+            SET daily_streak = ?, last_daily_claim = ? 
             WHERE user_id = ?
-        ''', (streak, ctx.author.id))
+        ''', (streak, yesterday, ctx.author.id))
         conn.commit()
         conn.close()
-        
-        # Reset the cooldown - need to get the daily command from drops cog
-        daily_cog = self.bot.get_cog('Drops')
-        if daily_cog:
-            daily_cmd = self.bot.get_command('daily')
-            if daily_cmd:
-                daily_cmd.reset_cooldown(ctx)
         
         # Preview what they'll get next claim
         next_streak = streak + 1

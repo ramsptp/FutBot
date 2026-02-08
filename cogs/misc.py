@@ -12,6 +12,9 @@ from utils.database import SUGGESTION_CHANNEL_ID
 
 logger = logging.getLogger(__name__)
 
+
+#---------------------------------------------------------BOT METADATA-------------------------------------------------------------------------------------
+
 # Bot metadata
 BOT_VERSION = "1.4.7"
 CREATOR = "noobmaster"
@@ -60,7 +63,8 @@ FACTS_LIST = [
 ]
 
 
-# --- UI Components ---
+#---------------------------------------------------------UI COMPONENTS-------------------------------------------------------------------------------------
+
 
 class HelpSelect(discord.ui.Select):
     def __init__(self):
@@ -160,7 +164,8 @@ class ChangelogView(discord.ui.View):
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
 
-# --- Cog ---
+#---------------------------------------------------------COG CLASS-------------------------------------------------------------------------------------
+
 
 class Misc(commands.Cog):
     """Miscellaneous commands - Help, About, Facts, Suggestions"""
@@ -176,6 +181,8 @@ class Misc(commands.Cog):
         
         view = HelpView()
         await ctx.send(embed=embed, view=view)
+
+    #---------------------------------------------------------BOT INFO-------------------------------------------------------------------------------------
 
     @commands.hybrid_command(name='about', description="About this bot")
     async def about(self, ctx):
@@ -198,6 +205,8 @@ class Misc(commands.Cog):
         view = ChangelogView(CHANGELOG_DATA)
         await ctx.send(embed=view.get_embed(), view=view)
 
+    #---------------------------------------------------------SUGGESTIONS-------------------------------------------------------------------------------------
+
     @commands.hybrid_command(name='suggest', description="Submit a suggestion")
     async def suggest(self, ctx, *, suggestion: str):
         suggestion_channel = self.bot.get_channel(SUGGESTION_CHANNEL_ID)
@@ -209,6 +218,8 @@ class Misc(commands.Cog):
             await ctx.send("Thank you for your suggestion! It has been forwarded to the team.")
         else:
             await ctx.send("Sorry, I couldn't find the suggestion channel. Please try again later.")
+
+    #---------------------------------------------------------FACTS-------------------------------------------------------------------------------------
 
     @commands.hybrid_command(name='facts', description="Get a random football fact")
     async def facts(self, ctx):

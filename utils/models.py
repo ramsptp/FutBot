@@ -147,3 +147,37 @@ def weighted_choice(cards_with_weights):
             return card
         upto += weight
     return cards_with_weights[0][0] if cards_with_weights else None
+
+
+def get_card_weight_by_name(card_name):
+    """Get the pack weight for a specific card by name."""
+    card = get_card_by_name(card_name)
+    if not card:
+        return None, None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    if card.card_type == 'Standard':
+        cursor.execute('SELECT COUNT(*) FROM cards WHERE card_type = "Standard"')
+        total_standard_cards = cursor.fetchone()[0]
+        conn.close()
+
+        if 70 <= card.overall <= 79:
+            return WEIGHT_70_79 / total_standard_cards, card.name
+        elif 80 <= card.overall <= 85:
+            return WEIGHT_80_85 / total_standard_cards, card.name
+        elif 86 <= card.overall <= 90:
+            return WEIGHT_86_90 / total_standard_cards, card.name
+        elif card.overall > 90:
+            return WEIGHT_90_PLUS / total_standard_cards, card.name
+        
+    else:
+        cursor.execute('SELECT COUNT(*) FROM cards WHERE card_type != "Standard"')
+        total_non_standard_cards = cursor.fetchone()[0]
+        conn.close()
+        return 3 / total_non_standard_cards, card.name
+    
+    conn.close()
+    return None, None
+

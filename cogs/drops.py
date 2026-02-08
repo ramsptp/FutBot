@@ -8,7 +8,7 @@ import random
 import asyncio
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from utils.database import (
     get_connection, ensure_player_exists, add_card_to_inventory,
@@ -21,7 +21,8 @@ from utils.models import (
 logger = logging.getLogger(__name__)
 
 
-# --- UI Components ---
+#---------------------------------------------------------UI COMPONENTS-------------------------------------------------------------------------------------
+
 
 class DailyView(discord.ui.View):
     def __init__(self, timeout=120):
@@ -120,7 +121,8 @@ class TimedCollectButton(discord.ui.Button):
         self.view.stop()
 
 
-# --- Cog ---
+#---------------------------------------------------------COG CLASS-------------------------------------------------------------------------------------
+
 
 class Drops(commands.Cog):
     """Daily rewards, card drops, and starter pack commands"""
@@ -193,9 +195,8 @@ class Drops(commands.Cog):
     # --- Commands ---
     
     @commands.hybrid_command(name='daily', description="Claim your daily reward card")
-    @commands.cooldown(1, 64800, commands.BucketType.user)
     async def daily(self, ctx):
-        """Claim your daily reward with streak bonus"""
+        """Claim your daily reward with streak bonus (once per calendar day)"""
         logger.info(f"User {ctx.author.name} (ID: {ctx.author.id}) invoked the daily command.")
         ensure_player_exists(ctx.author.id, ctx.author.name)
         
@@ -208,18 +209,49 @@ class Drops(commands.Cog):
         current_streak = result[0] if result[0] else 0
         last_claim = result[1]
         
-        # Calculate if streak continues or resets
-        now = datetime.now()
+        today = datetime.now().date()
         
+        # Check if already claimed today
         if last_claim:
-            last_claim_date = datetime.fromisoformat(last_claim)
-            hours_since_claim = (now - last_claim_date).total_seconds() / 3600
+            last_claim_date = datetime.fromisoformat(last_claim).date()
             
-            if hours_since_claim <= 48:
+            if last_claim_date == today:
+                # Already claimed today - show cooldown message
+                tomorrow = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+                time_until = tomorrow - datetime.now()
+                hours = int(time_until.total_seconds() // 3600)
+                minutes = int((time_until.total_seconds() % 3600) // 60)
+                
+                embed = discord.Embed(
+                    title="⏳ Daily Cooldown",
+                    description=f"You've already claimed today!\n\n**Come back in:** {hours}h {minutes}m",
+                    color=discord.Color.orange()
+                )
+                embed.add_field(name="🔥 Current Streak", value=f"**{current_streak}** days", inline=True)
+                
+                if current_streak < 7:
+                    embed.add_field(name="📍 Next Milestone", value=f"{7 - current_streak} days → Free Pack!", inline=True)
+                elif current_streak < 14:
+                    embed.add_field(name="📍 Next Milestone", value=f"{14 - current_streak} days → Rare Pack!", inline=True)
+                else:
+                    embed.add_field(name="🏆 Status", value="Max tier reached!", inline=True)
+                
+                await ctx.send(embed=embed)
+                conn.close()
+                logger.info(f"User {ctx.author.name} tried to claim daily reward but already claimed today")
+                return
+            
+            # Calculate days since last claim
+            days_since_claim = (today - last_claim_date).days
+            
+            if days_since_claim == 1:
+                # Claimed yesterday - streak continues!
                 current_streak += 1
-            else:
+            elif days_since_claim > 1:
+                # Missed a day - streak resets
                 current_streak = 1
         else:
+            # First ever claim
             current_streak = 1
         
         # Update streak in database
@@ -227,7 +259,7 @@ class Drops(commands.Cog):
             UPDATE players 
             SET daily_streak = ?, last_daily_claim = ? 
             WHERE user_id = ?
-        ''', (current_streak, now.isoformat(), ctx.author.id))
+        ''', (current_streak, datetime.now().isoformat(), ctx.author.id))
         
         # Calculate rewards
         if current_streak >= 14:
@@ -324,37 +356,6 @@ class Drops(commands.Cog):
                 
         except Exception as e:
             logger.error(f"Failed to send daily reward message to {ctx.author.name}: {e}")
-
-    @daily.error
-    async def daily_error(self, ctx, error):
-        if isinstance(error, commands.CommandOnCooldown):
-            retry_after = int(error.retry_after)
-            hours, remainder = divmod(retry_after, 3600)
-            minutes, _ = divmod(remainder, 60)
-            
-            conn = get_connection()
-            cursor = conn.cursor()
-            cursor.execute('SELECT daily_streak FROM players WHERE user_id = ?', (ctx.author.id,))
-            result = cursor.fetchone()
-            current_streak = result[0] if result and result[0] else 0
-            conn.close()
-            
-            embed = discord.Embed(
-                title="⏳ Daily Cooldown",
-                description=f"You've already claimed today!\n\n**Come back in:** {hours}h {minutes}m",
-                color=discord.Color.orange()
-            )
-            embed.add_field(name="🔥 Current Streak", value=f"**{current_streak}** days", inline=True)
-            
-            if current_streak < 7:
-                embed.add_field(name="📍 Next Milestone", value=f"{7 - current_streak} days → Free Pack!", inline=True)
-            elif current_streak < 14:
-                embed.add_field(name="📍 Next Milestone", value=f"{14 - current_streak} days → Rare Pack!", inline=True)
-            else:
-                embed.add_field(name="🏆 Status", value="Max tier reached!", inline=True)
-            
-            await ctx.send(embed=embed)
-            logger.info(f"User {ctx.author.name} tried to claim daily reward but is on cooldown")
 
     @commands.hybrid_command(name='drop', description="Drop a random card in the chat")
     @commands.cooldown(1, 1800, commands.BucketType.user)
