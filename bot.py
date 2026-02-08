@@ -9,6 +9,7 @@ from fuzzywuzzy import process
 from PIL import Image, ImageDraw, ImageFont, ImageOps 
 import io
 import time 
+from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 from typing import Literal
@@ -151,6 +152,19 @@ def migrate_db():
             if col not in card_columns:
                 print(f"Migrating DB: Adding {col} to cards...")
                 cursor.execute(f"ALTER TABLE cards ADD COLUMN {col} INTEGER DEFAULT 0")
+
+        # --- NEW: Daily Streak System ---
+        cursor.execute("PRAGMA table_info(players)")
+        player_columns = [info[1] for info in cursor.fetchall()]
+        
+        streak_cols = ['daily_streak', 'last_daily_claim']
+        for col in streak_cols:
+            if col not in player_columns:
+                print(f"Migrating DB: Adding {col} to players...")
+                if col == 'daily_streak':
+                    cursor.execute(f"ALTER TABLE players ADD COLUMN {col} INTEGER DEFAULT 0")
+                else:
+                    cursor.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT DEFAULT NULL")
 
         conn.commit()
         conn.close()
@@ -1770,9 +1784,84 @@ async def daily(ctx):
     logger.info(f"User {ctx.author.name} (ID: {ctx.author.id}) invoked the daily command.")
     ensure_player_exists(ctx.author.id, ctx.author.name)
     
-    # Generate two cards
+    # --- STREAK SYSTEM ---
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    
+    # Get current streak info
+    cursor.execute('SELECT daily_streak, last_daily_claim FROM players WHERE user_id = ?', (ctx.author.id,))
+    result = cursor.fetchone()
+    current_streak = result[0] if result[0] else 0
+    last_claim = result[1]
+    
+    # Calculate if streak continues or resets
+    now = datetime.now()
+    streak_maintained = False
+    
+    if last_claim:
+        last_claim_date = datetime.fromisoformat(last_claim)
+        hours_since_claim = (now - last_claim_date).total_seconds() / 3600
+        
+        # Streak continues if claimed within 18-48 hours (gives buffer)
+        if hours_since_claim <= 48:
+            streak_maintained = True
+            current_streak += 1
+        else:
+            # Streak broken - reset to 1
+            current_streak = 1
+    else:
+        # First ever claim
+        current_streak = 1
+    
+    # Update streak in database
+    cursor.execute('''
+        UPDATE players 
+        SET daily_streak = ?, last_daily_claim = ? 
+        WHERE user_id = ?
+    ''', (current_streak, now.isoformat(), ctx.author.id))
+    
+    # --- CALCULATE REWARDS ---
+    # Base coins based on streak tier
+    if current_streak >= 14:
+        bonus_coins = 300
+        tier_name = "🔥 Legendary"
+    elif current_streak >= 7:
+        bonus_coins = 200
+        tier_name = "💎 Diamond"
+    elif current_streak >= 4:
+        bonus_coins = 150
+        tier_name = "🥈 Silver"
+    else:
+        bonus_coins = 100
+        tier_name = "🥉 Bronze"
+    
+    # Add coins to player
+    cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (bonus_coins, ctx.author.id))
+    
+    # Check for milestone bonuses
+    milestone_text = ""
+    if current_streak == 7:
+        # Award a free Rare Player Pack at 7-day milestone
+        cursor.execute('SELECT * FROM packs WHERE user_id = ?', (ctx.author.id,))
+        if cursor.fetchone():
+            cursor.execute('UPDATE packs SET rare_player_pack = rare_player_pack + 1 WHERE user_id = ?', (ctx.author.id,))
+        else:
+            cursor.execute('INSERT INTO packs (user_id, rare_player_pack, icon_pack, hero_pack, tester_pack) VALUES (?, 1, 0, 0, 0)', (ctx.author.id,))
+        milestone_text = "\n\n🎁 **MILESTONE BONUS!** You got a FREE **Rare Player Pack**!"
+    elif current_streak == 14:
+        # Award a Rare Player Pack at 14-day milestone (every 7 days = rare pack)
+        cursor.execute('SELECT * FROM packs WHERE user_id = ?', (ctx.author.id,))
+        if cursor.fetchone():
+            cursor.execute('UPDATE packs SET rare_player_pack = rare_player_pack + 1 WHERE user_id = ?', (ctx.author.id,))
+        else:
+            cursor.execute('INSERT INTO packs (user_id, rare_player_pack, icon_pack, hero_pack, tester_pack) VALUES (?, 1, 0, 0, 0)', (ctx.author.id,))
+        milestone_text = "\n\n🎁 **2-WEEK MILESTONE!** You got a FREE **Rare Player Pack**!"
+    
+    conn.commit()
+    conn.close()
+    
+    # --- GENERATE CARDS ---
     cards = [weighted_choice(cards_with_weights) for _ in range(2)]
-    # Temporarily increment copies for display (since we are generating them now)
     for card in cards:
         card.copies += 1
 
@@ -1781,14 +1870,21 @@ async def daily(ctx):
     else:
         logger.error(f"Failed to increment cards_dropped for user {ctx.author.name}.")
 
-    content = f'{ctx.author.mention}, you have a daily reward card to collect. Please choose one of the following cards (Expires in 2 mins):'
+    # --- BUILD EMBED ---
+    streak_display = f"🔥 **{current_streak} Day Streak!** ({tier_name})"
+    coins_display = f"💰 **+{bonus_coins} coins** earned!"
+    
+    content = f'{ctx.author.mention}, here is your daily reward! Choose a card below:'
 
-    # Use Daily View
     view = DailyView(timeout=120)
     for card in cards:
         view.add_item(CollectCardButton(card, ctx.author.id))
 
-    embed = discord.Embed(title="Daily Reward", description="Please choose one of the following cards:", color=0x00ff00)
+    embed = discord.Embed(
+        title="📅 Daily Reward", 
+        description=f"{streak_display}\n{coins_display}{milestone_text}\n\n**Choose one card below:**", 
+        color=discord.Color.gold()
+    )
     
     for i, card in enumerate(cards, 1):
         embed.add_field(name=f"Card {i} - {card.name}", value=(
@@ -1796,8 +1892,18 @@ async def daily(ctx):
             f"**Rarity:** {card.card_rarity}\n"
             f"**Type:** {card.card_type}\n"
             f"**Overall:** {card.overall}\n"
-            f"**Total Copies:** {card.copies}\n"  # <-- Added this line
+            f"**Total Copies:** {card.copies}\n"
         ), inline=True)
+    
+    # Show next milestone
+    if current_streak < 7:
+        days_to_milestone = 7 - current_streak
+        embed.set_footer(text=f"📍 {days_to_milestone} days until FREE Rare Player Pack!")
+    elif current_streak < 14:
+        days_to_milestone = 14 - current_streak
+        embed.set_footer(text=f"📍 {days_to_milestone} days until next FREE Rare Player Pack!")
+    else:
+        embed.set_footer(text=f"🏆 You've reached max streak tier! Keep it going!")
     
     files = [discord.File(card.image_path) for card in cards]
     
@@ -1809,7 +1915,7 @@ async def daily(ctx):
         if not view.collected:
             expired_embed = discord.Embed(
                 title="❌ Daily Reward Expired",
-                description="You didn't pick a card in time! The options have vanished.",
+                description="You didn't pick a card in time! The options have vanished.\n\n*(Your streak and coins are still saved!)*",
                 color=discord.Color.red()
             )
             await msg.edit(content=None, embed=expired_embed, view=None)
@@ -1826,10 +1932,86 @@ async def daily_error(ctx, error):
         retry_after = int(error.retry_after)
         hours, remainder = divmod(retry_after, 3600)
         minutes, _ = divmod(remainder, 60)
-        await ctx.send(f"You have already claimed your daily reward. Please wait {hours} hours and {minutes} minutes to claim it again.")
+        
+        # Get current streak for display
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT daily_streak FROM players WHERE user_id = ?', (ctx.author.id,))
+        result = cursor.fetchone()
+        current_streak = result[0] if result and result[0] else 0
+        conn.close()
+        
+        embed = discord.Embed(
+            title="⏳ Daily Cooldown",
+            description=f"You've already claimed today!\n\n**Come back in:** {hours}h {minutes}m",
+            color=discord.Color.orange()
+        )
+        embed.add_field(name="🔥 Current Streak", value=f"**{current_streak}** days", inline=True)
+        
+        if current_streak < 7:
+            embed.add_field(name="📍 Next Milestone", value=f"{7 - current_streak} days → Free Pack!", inline=True)
+        elif current_streak < 14:
+            embed.add_field(name="📍 Next Milestone", value=f"{14 - current_streak} days → Rare Pack!", inline=True)
+        else:
+            embed.add_field(name="🏆 Status", value="Max tier reached!", inline=True)
+        
+        await ctx.send(embed=embed)
         logger.info(f"User {ctx.author.name} tried to claim daily reward but is on cooldown: {hours} hours and {minutes} minutes remaining.")
 
 
+
+
+# --- ADMIN: Streak Testing Command ---
+@bot.hybrid_command(name='teststreak', description="[ADMIN] Set your daily streak for testing")
+async def teststreak(ctx, streak: int):
+    # Admin-only check
+    if ctx.author.id not in ADMIN_IDS:
+        await ctx.send("❌ This command is for admins only.", ephemeral=True)
+        return
+    
+    if streak < 0:
+        await ctx.send("❌ Streak must be 0 or higher.", ephemeral=True)
+        return
+    
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    
+    # Set streak and reset last_daily_claim so they can claim immediately
+    cursor.execute('''
+        UPDATE players 
+        SET daily_streak = ?, last_daily_claim = NULL 
+        WHERE user_id = ?
+    ''', (streak, ctx.author.id))
+    conn.commit()
+    conn.close()
+    
+    # Also reset the cooldown
+    daily.reset_cooldown(ctx)
+    
+    # Preview what they'll get next claim
+    next_streak = streak + 1
+    if next_streak >= 14:
+        tier = "🔥 Legendary (300 coins)"
+    elif next_streak >= 7:
+        tier = "💎 Diamond (200 coins)"
+    elif next_streak >= 4:
+        tier = "🥈 Silver (150 coins)"
+    else:
+        tier = "🥉 Bronze (100 coins)"
+    
+    milestone = ""
+    if next_streak == 7 or next_streak == 14:
+        milestone = "\n🎁 **Milestone Pack!** You'll get a Rare Player Pack!"
+    
+    embed = discord.Embed(
+        title="🧪 Test Mode Activated",
+        description=f"Your streak set to **{streak}**.\nCooldown reset - you can claim `/daily` now!",
+        color=discord.Color.purple()
+    )
+    embed.add_field(name="Next Claim Preview", value=f"Day **{next_streak}** → {tier}{milestone}", inline=False)
+    
+    await ctx.send(embed=embed, ephemeral=True)
+    logger.info(f"[ADMIN] {ctx.author.name} set their streak to {streak} for testing.")
 
 
 @bot.hybrid_command(name='drop', description="Drop a random card in the chat")
