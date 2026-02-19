@@ -1957,54 +1957,7 @@ async def daily(ctx):
 
 
 # --- ADMIN: Streak Testing Command ---
-@bot.hybrid_command(name='teststreak', description="[ADMIN] Set your daily streak for testing")
-async def teststreak(ctx, streak: int):
-    # Admin-only check
-    if ctx.author.id not in ADMIN_IDS:
-        await ctx.send("❌ This command is for admins only.", ephemeral=True)
-        return
-    
-    if streak < 0:
-        await ctx.send("❌ Streak must be 0 or higher.", ephemeral=True)
-        return
-    
-    conn = sqlite3.connect('cards_game.db')
-    cursor = conn.cursor()
-    
-    # Set streak and set last_daily_claim to YESTERDAY so claiming today will continue the streak
-    yesterday = (datetime.now() - timedelta(days=1)).isoformat()
-    cursor.execute('''
-        UPDATE players 
-        SET daily_streak = ?, last_daily_claim = ? 
-        WHERE user_id = ?
-    ''', (streak, yesterday, ctx.author.id))
-    conn.commit()
-    conn.close()
-    
-    # Preview what they'll get next claim
-    next_streak = streak + 1
-    if next_streak >= 14:
-        tier = "🔥 Legendary (300 coins)"
-    elif next_streak >= 7:
-        tier = "💎 Diamond (200 coins)"
-    elif next_streak >= 4:
-        tier = "🥈 Silver (150 coins)"
-    else:
-        tier = "🥉 Bronze (100 coins)"
-    
-    milestone = ""
-    if next_streak == 7 or next_streak == 14:
-        milestone = "\n🎁 **Milestone Pack!** You'll get a Rare Player Pack!"
-    
-    embed = discord.Embed(
-        title="🧪 Test Mode Activated",
-        description=f"Your streak set to **{streak}**.\nCooldown reset - you can claim `/daily` now!",
-        color=discord.Color.purple()
-    )
-    embed.add_field(name="Next Claim Preview", value=f"Day **{next_streak}** → {tier}{milestone}", inline=False)
-    
-    await ctx.send(embed=embed, ephemeral=True)
-    logger.info(f"[ADMIN] {ctx.author.name} set their streak to {streak} for testing.")
+
 
 
 @bot.hybrid_command(name='drop', description="Drop a random card in the chat")

@@ -18,7 +18,7 @@
 | 1088-1232 | **Auto-Drop, Starter Pack** |
 | 1237-1556 | **View Command + Card Details UI** |
 | 1557-1769 | **Lookup (Minted Card)** |
-| 1770-2083 | **Daily, Drop, Teststreak** |
+| 1770-2083 | **Daily, Drop** |
 | 2084-2234 | **Stats, Titles** |
 | 2235-2476 | **Leaderboards** |
 | 2477-2746 | **Inventory View** |
@@ -50,7 +50,7 @@
 | `suggest` | Prefix | 419-430 | Send suggestions |
 | `facts` | Prefix | 920-925 | Random football facts |
 | `daily` | Hybrid | 1781-1949 | Daily reward with streak |
-| `teststreak` | Hybrid | 1960-2007 | Admin: Set streak |
+
 | `drop` | Prefix | 2010-2075 | Manual card drop |
 | `starter` | Prefix | 1207-1232 | Starter pack |
 | `view` | Hybrid | 1483-1556 | View card details |
