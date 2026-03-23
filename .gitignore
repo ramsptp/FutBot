@@ -2,3 +2,5 @@
 .env
 cards_game.db
 pitch.png
+CLAUDE.md
+.claude/

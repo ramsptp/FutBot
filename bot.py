@@ -352,11 +352,14 @@ class ChangelogView(discord.ui.View):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.4.6"
+BOT_VERSION = "1.5.2"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 # Sorted Newest to Oldest for better UX
 CHANGELOG_DATA = [
+    "1.5.2 - Added /delete_deck command for easier deck management.",
+    "1.5.1 - Wishlists are now fully interactive buttons on Card Details.",
+    "1.5.0 - Overhauled Daily Rewards: Calendar-day streaks with milestone packs!",
     "1.4.7 - Added multiple sales and sale menu in sell command.",
     "1.4.6 - Added autocomplete for view, lookup and sell commands.",
     "1.4.5 - Fixed changelog spanning multiple pages",
@@ -4115,7 +4118,7 @@ async def sell(ctx, card1: str = None, card2: str = None, card3: str = None, car
 class MultiSellSelect(discord.ui.Select):
     def __init__(self, page_cards, selected_ids):
         options = []
-        for card in page_cards:
+        for i, card in enumerate(page_cards):
             is_selected = card.card_id in selected_ids
             value = calculate_card_value(card)
             
@@ -4126,7 +4129,7 @@ class MultiSellSelect(discord.ui.Select):
             options.append(discord.SelectOption(
                 label=label, 
                 description=desc, 
-                value=str(card.card_id),
+                value=f"{card.card_id}-{i}",
                 emoji="💰"
             ))
 
@@ -4140,7 +4143,7 @@ class MultiSellSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
-        card_id = int(self.values[0])
+        card_id = int(self.values[0].split('-')[0])
         
         # Toggle: If in list, remove it. If not, add it.
         if card_id in view.selected_ids:
@@ -4899,7 +4902,7 @@ async def view_deck(ctx, deck_name: str, user: discord.User = None):
 class DeckBuilderSelect(discord.ui.Select):
     def __init__(self, page_cards, selected_ids):
         options = []
-        for card in page_cards:
+        for i, card in enumerate(page_cards):
             # Check if this card is currently selected in the draft
             is_selected = card.card_id in selected_ids
             
@@ -4910,7 +4913,7 @@ class DeckBuilderSelect(discord.ui.Select):
             options.append(discord.SelectOption(
                 label=label, 
                 description=desc, 
-                value=str(card.card_id),
+                value=f"{card.card_id}-{i}",
                 emoji="⚽"
             ))
 
@@ -4924,7 +4927,7 @@ class DeckBuilderSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
-        card_id = int(self.values[0])
+        card_id = int(self.values[0].split('-')[0])
         
         # Toggle Logic
         if card_id in view.selected_ids:
