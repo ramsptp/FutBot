@@ -48,9 +48,31 @@
          href="{{ url_for('user_achievements') }}">
         <i class="bi bi-star me-1"></i>User Ach.
       </a>
+
+      <div class="nav-divider"></div>
+
+      <!-- Mode badge -->
+      <a href="{{ url_for('settings') }}"
+         class="mode-badge mode-{{ current_mode }} {% if request.endpoint == 'settings' %}active{% endif %}"
+         title="Switch database mode">
+        {% if current_mode == 'online' %}
+          <i class="bi bi-cloud-fill me-1"></i>Online
+        {% else %}
+          <i class="bi bi-hdd-fill me-1"></i>Local
+        {% endif %}
+      </a>
     </div>
   </div>
 </nav>
+
+{% if current_mode == 'online' and not cfg.api_key %}
+<div class="alert alert-warning alert-dismissible fade show mx-4 mt-0 mb-3" role="alert">
+  <i class="bi bi-exclamation-triangle-fill me-2"></i>
+  <strong>Online mode active</strong> — API key not set. Go to
+  <a href="{{ url_for('settings') }}" class="alert-link">Settings</a> to configure it.
+  <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+</div>
+{% endif %}
 
 <div class="container-fluid px-4">
   {% with messages = get_flashed_messages(with_categories=true) %}

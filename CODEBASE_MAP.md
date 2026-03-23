@@ -14,7 +14,7 @@
 | 431-486 | **Achievements** |
 | 487-906 | **Secret Commands:** England, Brazil, Italy, Germany, Netherlands, France |
 | 907-975 | **Card & Player Classes + Helpers** |
-| 976-1087 | **Card Weights & Drop Logic** |
+| 976-1092 | **Card Weights & Drop Logic** (incl. `NON_DROPPABLE_TYPES`) |
 | 1088-1232 | **Auto-Drop, Starter Pack** |
 | 1237-1556 | **View Command + Card Details UI** |
 | 1557-1769 | **Lookup (Minted Card)** |
@@ -32,7 +32,7 @@
 | 4727-4940 | **Decks: View, Create, Edit** |
 | 4941-5156 | **Visual Deck Builder** |
 | 5157-5182 | **Economy Helpers** |
-| 5183-5306 | **Catalog Viewer** |
+| 5183-5306 | **Catalog Viewer** (filters `NON_DROPPABLE_TYPES`) |
 | 5307-5441 | **Wishlist** |
 | 5442-5512 | **Admin Commands** |
 | 5513-5533 | **Slash Sync & Run** |
@@ -232,7 +232,8 @@
 | `DROP_CHANNEL_IDS` | .env | 39 |
 | `ALLOWED_CHANNELS` | .env | 40 |
 | `SUGGESTION_CHANNEL_ID` | .env | 41 |
+| `NON_DROPPABLE_TYPES` | Hardcoded constant | ~1043 |
 
 ---
 
-**Last Updated:** Feb 2026
+**Last Updated:** Mar 2026

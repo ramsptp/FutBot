@@ -142,6 +142,60 @@ body {
 .th-sort:hover  { color: var(--text); }
 .th-sort.active { color: var(--accent); }
 
+/* ── Mode badge (navbar) ───────────────────────────────── */
+.nav-divider {
+  width: 1px; background: var(--border);
+  margin: 4px 6px; align-self: stretch;
+}
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 20px;
+  text-decoration: none;
+  letter-spacing: .03em;
+  white-space: nowrap;
+}
+.mode-badge.mode-local  { background: rgba(59,130,246,.15); color: #60a5fa; }
+.mode-badge.mode-online { background: rgba(74,222,128,.15); color: #4ade80; }
+.mode-badge:hover       { opacity: .85; }
+
+/* ── Settings page ─────────────────────────────────────── */
+.section-heading {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+.mode-option {
+  flex: 1;
+  cursor: pointer;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  text-align: center;
+  transition: border-color .15s, background .15s;
+}
+.mode-option input[type="radio"] { display: none; }
+.mode-option.selected {
+  border-color: var(--accent);
+  background: rgba(88,101,242,.08);
+}
+.mode-option:hover { border-color: var(--accent); }
+.mode-icon { font-size: 1.4rem; margin-bottom: 4px; color: var(--accent); }
+.mode-label { font-weight: 700; font-size: .9rem; }
+.mode-desc  { font-size: .75rem; color: var(--muted); }
+
+/* spinner for test button */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { display: inline-block; animation: spin .8s linear infinite; }
+
 /* ── Misc ──────────────────────────────────────────────── */
 .font-monospace { font-family: 'Consolas', monospace; font-size: 0.8rem; }
 .badge.bg-secondary { background: var(--border) !important; color: var(--muted); }

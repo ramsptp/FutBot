@@ -5,16 +5,22 @@ import sqlite3
 import random
 import asyncio
 import logging
+import json
 from fuzzywuzzy import process
-from PIL import Image, ImageDraw, ImageFont, ImageOps 
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import io
-import time 
+import time
 from datetime import datetime, timedelta
 import os
 from dotenv import load_dotenv
 from typing import Literal
 from discord import app_commands
 from typing import List
+try:
+    from aiohttp import web as aiohttp_web
+    _AIOHTTP_AVAILABLE = True
+except ImportError:
+    _AIOHTTP_AVAILABLE = False
 
 
 
@@ -39,6 +45,8 @@ ADMIN_IDS = load_id_list('ADMIN_IDS')
 DROP_CHANNEL_IDS = load_id_list('DROP_CHANNEL_IDS')
 ALLOWED_CHANNELS = load_id_list('ALLOWED_CHANNELS')
 SUGGESTION_CHANNEL_ID = int(os.getenv('SUGGESTION_CHANNEL_ID'))
+API_PORT = int(os.getenv('API_PORT', '25535'))
+DASHBOARD_SECRET = os.getenv('DASHBOARD_SECRET', '')
 
 # Connect to SQLite database (or create it if it doesn't exist)
 conn = sqlite3.connect('cards_game.db')
@@ -1029,6 +1037,10 @@ def fetch_all_cards():
 
 all_cards = fetch_all_cards()
 
+# Card types excluded from all pack drops and random card drops
+NON_DROPPABLE_TYPES = ('Unique',)
+_ndt_sql = ','.join('?' * len(NON_DROPPABLE_TYPES))  # placeholder string for SQL NOT IN
+
 # Define weights for each overall rating range
 weight_70_79 = 70
 weight_80_85 = 20
@@ -1138,6 +1150,7 @@ class CollectButton(discord.ui.Button):
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
     card_drop.start()
+    bot.loop.create_task(_start_dashboard_api())
 
 def weighted_choice(cards_with_weights):
     total = sum(weight for card, weight in cards_with_weights)
@@ -1216,8 +1229,8 @@ async def get_starter_pack(ctx):
         await ctx.send("You have already claimed your starter pack!")
         return
 
-    common_pack = random.sample([card for card in all_cards if 70 <= card.overall <= 79], 6)
-    uncommon_pack = random.sample([card for card in all_cards if 80 <= card.overall <= 85], 3)
+    common_pack = random.sample([card for card in all_cards if 70 <= card.overall <= 79 and card.card_type not in NON_DROPPABLE_TYPES], 6)
+    uncommon_pack = random.sample([card for card in all_cards if 80 <= card.overall <= 85 and card.card_type not in NON_DROPPABLE_TYPES], 3)
     rare_pack = random.sample([card for card in all_cards if card.overall > 85 and card.card_type == 'Standard'], 1)
 
     all_cards_received = common_pack + uncommon_pack + rare_pack
@@ -4508,7 +4521,7 @@ async def open_rare_player_pack(ctx, user_id):
         if chosen_type == 'Standard':
             cursor.execute("SELECT card_id, name, card_rarity, card_type, attack, defense, speed, overall, league, nation, image_path FROM cards WHERE card_type = 'Standard' AND overall > 85 ORDER BY RANDOM() LIMIT 1")
         else:
-            cursor.execute("SELECT card_id, name, card_rarity, card_type, attack, defense, speed, overall, league, nation, image_path FROM cards WHERE card_type != 'Standard' AND overall > 85 ORDER BY RANDOM() LIMIT 1")
+            cursor.execute(f"SELECT card_id, name, card_rarity, card_type, attack, defense, speed, overall, league, nation, image_path FROM cards WHERE card_type != 'Standard' AND card_type NOT IN ({_ndt_sql}) AND overall > 85 ORDER BY RANDOM() LIMIT 1", NON_DROPPABLE_TYPES)
 
         card = cursor.fetchone()
 
@@ -4642,7 +4655,7 @@ async def open_tester_pack(ctx, user_id):
         if chosen_type == 'Standard':
             cursor.execute("SELECT card_id, name, card_rarity, card_type, attack, defense, speed, overall, league, nation, image_path FROM cards WHERE card_type = 'Standard' AND overall > 85 ORDER BY RANDOM() LIMIT 1")
         else:
-            cursor.execute("SELECT card_id, name, card_rarity, card_type, attack, defense, speed, overall, league, nation, image_path FROM cards WHERE card_type != 'Standard' AND overall > 85 ORDER BY RANDOM() LIMIT 1")
+            cursor.execute(f"SELECT card_id, name, card_rarity, card_type, attack, defense, speed, overall, league, nation, image_path FROM cards WHERE card_type != 'Standard' AND card_type NOT IN ({_ndt_sql}) AND overall > 85 ORDER BY RANDOM() LIMIT 1", NON_DROPPABLE_TYPES)
 
         card = cursor.fetchone()
 
@@ -5235,9 +5248,9 @@ class CatalogView(discord.ui.View):
 
 @bot.hybrid_command(name='catalog', description="View every card available in the game")
 async def catalog(ctx, *, search: str = None):
-    # 1. Fetch all cards
-    all_cards = fetch_all_cards()
-    
+    # 1. Fetch all cards (exclude non-droppable types like Unique)
+    all_cards = [c for c in fetch_all_cards() if c.card_type not in NON_DROPPABLE_TYPES]
+
     if not all_cards:
         return await ctx.send("The game database appears to be empty.")
 
@@ -5481,6 +5494,161 @@ async def sync(ctx):
         await ctx.send(f"✅ Synced {len(synced)} commands globally.")
     except Exception as e:
         await ctx.send(f"❌ Sync failed: {e}")
+
+
+#---------------------DASHBOARD API (Phase 2)------------------------
+
+def _api_auth(request):
+    """Return True if the request carries the correct API key."""
+    return request.headers.get('X-API-Key') == DASHBOARD_SECRET
+
+
+def _json_ok(data):
+    return aiohttp_web.Response(
+        text=json.dumps(data),
+        content_type='application/json',
+        status=200,
+    )
+
+
+def _json_err(msg, status=400):
+    return aiohttp_web.Response(
+        text=json.dumps({'error': msg}),
+        content_type='application/json',
+        status=status,
+    )
+
+
+def _db_connect():
+    """Open a short-lived SQLite connection (same file the bot uses)."""
+    c = sqlite3.connect('cards_game.db')
+    c.row_factory = sqlite3.Row
+    return c
+
+
+# ── /api/ping ────────────────────────────────────────────────────────────────
+async def api_ping(request):
+    if not _api_auth(request):
+        return _json_err('Unauthorized', 401)
+    return _json_ok({'ok': True, 'bot': str(bot.user)})
+
+
+# ── /api/tables ──────────────────────────────────────────────────────────────
+async def api_tables(request):
+    if not _api_auth(request):
+        return _json_err('Unauthorized', 401)
+    with _db_connect() as c:
+        rows = c.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+    return _json_ok({'tables': [r['name'] for r in rows]})
+
+
+# ── /api/table/<name> ─────────────────────────────────────────────────────────
+async def api_table_rows(request):
+    if not _api_auth(request):
+        return _json_err('Unauthorized', 401)
+    table = request.match_info['table']
+    # Basic whitelist: only allow alphanumeric + underscore table names
+    if not table.replace('_', '').isalnum():
+        return _json_err('Invalid table name')
+    try:
+        with _db_connect() as c:
+            rows = c.execute(f'SELECT rowid, * FROM "{table}"').fetchall()
+        return _json_ok({'rows': [dict(r) for r in rows]})
+    except Exception as e:
+        return _json_err(str(e))
+
+
+# ── POST /api/table/<name>/insert ─────────────────────────────────────────────
+async def api_table_insert(request):
+    if not _api_auth(request):
+        return _json_err('Unauthorized', 401)
+    table = request.match_info['table']
+    if not table.replace('_', '').isalnum():
+        return _json_err('Invalid table name')
+    try:
+        data = await request.json()
+        cols = list(data.keys())
+        placeholders = ', '.join('?' for _ in cols)
+        col_names = ', '.join(f'"{c}"' for c in cols)
+        values = [data[c] for c in cols]
+        with _db_connect() as c:
+            cur = c.execute(
+                f'INSERT INTO "{table}" ({col_names}) VALUES ({placeholders})',
+                values,
+            )
+            c.commit()
+            return _json_ok({'inserted_id': cur.lastrowid})
+    except Exception as e:
+        return _json_err(str(e))
+
+
+# ── POST /api/table/<name>/update/<rowid> ─────────────────────────────────────
+async def api_table_update(request):
+    if not _api_auth(request):
+        return _json_err('Unauthorized', 401)
+    table = request.match_info['table']
+    rowid = request.match_info['rowid']
+    if not table.replace('_', '').isalnum():
+        return _json_err('Invalid table name')
+    if not rowid.isdigit():
+        return _json_err('Invalid rowid')
+    try:
+        data = await request.json()
+        set_clause = ', '.join(f'"{k}" = ?' for k in data)
+        values = list(data.values()) + [int(rowid)]
+        with _db_connect() as c:
+            c.execute(
+                f'UPDATE "{table}" SET {set_clause} WHERE rowid = ?',
+                values,
+            )
+            c.commit()
+        return _json_ok({'updated': True})
+    except Exception as e:
+        return _json_err(str(e))
+
+
+# ── DELETE /api/table/<name>/delete/<rowid> ───────────────────────────────────
+async def api_table_delete(request):
+    if not _api_auth(request):
+        return _json_err('Unauthorized', 401)
+    table = request.match_info['table']
+    rowid = request.match_info['rowid']
+    if not table.replace('_', '').isalnum():
+        return _json_err('Invalid table name')
+    if not rowid.isdigit():
+        return _json_err('Invalid rowid')
+    try:
+        with _db_connect() as c:
+            c.execute(f'DELETE FROM "{table}" WHERE rowid = ?', (int(rowid),))
+            c.commit()
+        return _json_ok({'deleted': True})
+    except Exception as e:
+        return _json_err(str(e))
+
+
+async def _start_dashboard_api():
+    if not _AIOHTTP_AVAILABLE:
+        logger.warning('aiohttp not installed — dashboard API disabled')
+        return
+    if not DASHBOARD_SECRET:
+        logger.warning('DASHBOARD_SECRET not set — dashboard API disabled')
+        return
+
+    app = aiohttp_web.Application()
+    app.router.add_get('/api/ping', api_ping)
+    app.router.add_get('/api/tables', api_tables)
+    app.router.add_get('/api/table/{table}', api_table_rows)
+    app.router.add_post('/api/table/{table}/insert', api_table_insert)
+    app.router.add_post('/api/table/{table}/update/{rowid}', api_table_update)
+    app.router.add_delete('/api/table/{table}/delete/{rowid}', api_table_delete)
+
+    runner = aiohttp_web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp_web.TCPSite(runner, '0.0.0.0', API_PORT)
+    await site.start()
+    logger.info(f'Dashboard API listening on port {API_PORT}')
 
 
 #---------------------RUN BOT------------------------
