@@ -547,29 +547,38 @@ def inventories():
 def add_inventory():
     user_id = request.form.get('user_id', '').strip()
     card_id = request.form.get('card_id', '').strip()
-    edition = request.form.get('edition', '1').strip() or '1'
     if not user_id or not card_id:
         flash('User ID and Card ID are required.', 'error')
         return redirect(url_for('inventories'))
 
     if is_online():
         try:
-            _rdb().insert('inventories', {
-                'user_id': int(user_id), 'card_id': int(card_id), 'edition': int(edition)
+            rdb       = _rdb()
+            card_rows = rdb.table_rows('cards')
+            card      = next((c for c in card_rows if c['card_id'] == int(card_id)), None)
+            copies    = int(card['copies'] or 0) if card else 0
+            edition   = copies + 1
+            if card:
+                rdb.update('cards', int(card_id), {'copies': copies + 1})
+            rdb.insert('inventories', {
+                'user_id': int(user_id), 'card_id': int(card_id), 'edition': edition
             })
-            flash(f'Added card {card_id} to player {user_id}.', 'success')
+            flash(f'Added card {card_id} to player {user_id} (edition #{edition}).', 'success')
         except Exception as e:
             flash(f'API error: {e}', 'error')
         return redirect(url_for('inventories'))
 
     # — Local mode —
-    conn = get_db()
+    conn     = get_db()
+    card_row = conn.execute('SELECT name, copies FROM cards WHERE card_id = ?', (int(card_id),)).fetchone()
+    copies   = card_row['copies'] if card_row else 0
+    edition  = copies + 1
+    conn.execute('UPDATE cards SET copies = copies + 1 WHERE card_id = ?', (int(card_id),))
     conn.execute('INSERT INTO inventories (user_id, card_id, edition) VALUES (?, ?, ?)',
-                 (int(user_id), int(card_id), int(edition)))
+                 (int(user_id), int(card_id), edition))
     conn.commit()
-    card = conn.execute('SELECT name FROM cards WHERE card_id = ?', (card_id,)).fetchone()
     conn.close()
-    flash(f'Added "{card["name"] if card else card_id}" to player {user_id}.', 'success')
+    flash(f'Added "{card_row["name"] if card_row else card_id}" to player {user_id} (edition #{edition}).', 'success')
     return redirect(url_for('inventories'))
 
 
@@ -763,7 +772,7 @@ def packs():
             rdb = _rdb()
             if not rdb.table_exists('packs'):
                 return render_template('packs.html', rows=[], user_filter='', total=0,
-                                       pack_cols=[], table_missing=True)
+                                       pack_cols=[], all_players=[], table_missing=True)
             user_filter = request.args.get('user_id', '').strip()
             pk_rows    = rdb.table_rows('packs')
             plyr_rows  = rdb.table_rows('players')
@@ -780,18 +789,20 @@ def packs():
                             user_filter.lower() in (r.get('player_name') or '').lower() or
                             user_filter in str(r.get('user_id', ''))]
             enriched.sort(key=lambda r: (r.get('player_name') or '').lower())
+            all_players = [{'user_id': p['user_id'], 'name': p['name']} for p in plyr_rows]
         except Exception as e:
             flash(f'API error: {e}', 'error')
-            enriched, pack_cols, user_filter = [], [], ''
+            enriched, pack_cols, user_filter, all_players = [], [], '', []
         return render_template('packs.html', rows=enriched, user_filter=user_filter,
-                               total=len(enriched), pack_cols=pack_cols, table_missing=False)
+                               total=len(enriched), pack_cols=pack_cols,
+                               all_players=all_players, table_missing=False)
 
     # — Local mode —
     conn = get_db()
     if not table_exists(conn, 'packs'):
         conn.close()
         return render_template('packs.html', rows=[], user_filter='', total=0,
-                               pack_cols=[], table_missing=True)
+                               pack_cols=[], all_players=[], table_missing=True)
     user_filter = request.args.get('user_id', '').strip()
     pack_cols   = get_pack_cols(conn)
     query = '''
@@ -805,10 +816,12 @@ def packs():
         query += ' AND (CAST(pk.user_id AS TEXT) LIKE ? OR p.name LIKE ?)'
         params += [f'%{user_filter}%', f'%{user_filter}%']
     query += ' ORDER BY p.name'
-    rows = conn.execute(query, params).fetchall()
+    rows        = conn.execute(query, params).fetchall()
+    all_players = conn.execute('SELECT user_id, name FROM players ORDER BY name').fetchall()
     conn.close()
     return render_template('packs.html', rows=rows, user_filter=user_filter,
-                           total=len(rows), pack_cols=pack_cols, table_missing=False)
+                           total=len(rows), pack_cols=pack_cols,
+                           all_players=all_players, table_missing=False)
 
 
 @app.route('/packs/<int:user_id>/<col>', methods=['POST'])
@@ -866,6 +879,68 @@ def delete_pack(rowid):
     conn.commit()
     conn.close()
     flash('Pack entry removed.', 'success')
+    return redirect(url_for('packs'))
+
+
+@app.route('/packs/give', methods=['POST'])
+def give_pack():
+    user_id  = request.form.get('user_id', '').strip()
+    pack_col = request.form.get('pack_col', '').strip()
+    qty      = request.form.get('quantity', '1').strip()
+
+    if not user_id or not pack_col:
+        flash('Player and pack type are required.', 'error')
+        return redirect(url_for('packs'))
+    if not qty.isdigit() or int(qty) <= 0:
+        flash('Quantity must be a positive whole number.', 'error')
+        return redirect(url_for('packs'))
+
+    qty     = int(qty)
+    user_id = int(user_id)
+
+    if is_online():
+        try:
+            rdb       = _rdb()
+            pk_rows   = rdb.table_rows('packs')
+            pack_cols = [k for k in (list(pk_rows[0].keys()) if pk_rows else [])
+                         if k not in ('user_id', 'rowid')]
+            if pack_col not in pack_cols:
+                flash('Invalid pack type.', 'error')
+                return redirect(url_for('packs'))
+            row = next((r for r in pk_rows if r.get('user_id') == user_id), None)
+            if row:
+                current = int(row.get(pack_col) or 0)
+                rdb.update('packs', row['rowid'], {pack_col: current + qty})
+            else:
+                new_data = {'user_id': user_id}
+                for col in pack_cols:
+                    new_data[col] = qty if col == pack_col else 0
+                rdb.insert('packs', new_data)
+            flash(f'Gave {qty}× {pack_col.replace("_", " ").title()} to player {user_id}.', 'success')
+        except Exception as e:
+            flash(f'API error: {e}', 'error')
+        return redirect(url_for('packs'))
+
+    # — Local mode —
+    conn       = get_db()
+    valid_cols = get_pack_cols(conn)
+    if pack_col not in valid_cols:
+        conn.close()
+        flash('Invalid pack type.', 'error')
+        return redirect(url_for('packs'))
+    existing = conn.execute('SELECT 1 FROM packs WHERE user_id = ?', (user_id,)).fetchone()
+    if existing:
+        conn.execute(f'UPDATE packs SET {pack_col} = {pack_col} + ? WHERE user_id = ?', (qty, user_id))
+    else:
+        cols_str = ', '.join(valid_cols)
+        zeros    = ', '.join('0' for _ in valid_cols)
+        conn.execute(f'INSERT INTO packs (user_id, {cols_str}) VALUES (?, {zeros})', (user_id,))
+        conn.execute(f'UPDATE packs SET {pack_col} = {pack_col} + ? WHERE user_id = ?', (qty, user_id))
+    conn.commit()
+    player = conn.execute('SELECT name FROM players WHERE user_id = ?', (user_id,)).fetchone()
+    conn.close()
+    name = player['name'] if player else str(user_id)
+    flash(f'Gave {qty}× {pack_col.replace("_", " ").title()} to {name}.', 'success')
     return redirect(url_for('packs'))
 
 
