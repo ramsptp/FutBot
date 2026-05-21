@@ -1479,8 +1479,8 @@ async def card_search_autocomplete(interaction: discord.Interaction, current: st
     count = 0
     
     for card in all_cards:
-        # Check if search term is in name (case insensitive)
-        if current.lower() in card.name.lower():
+        # Check if search term is in name (case insensitive); hide Unique cards from autocomplete
+        if current.lower() in card.name.lower() and card.card_type not in NON_DROPPABLE_TYPES:
             matches.append(card)
             count += 1
             if count == 25: # Discord limit
@@ -1510,10 +1510,21 @@ async def view(ctx, *, player_name: str):
         # 2. Fallback: Search by name text
         cards = get_card_by_name_or_id(player_name)
     
+    # Remove Unique cards the requesting user doesn't own
+    visible = []
+    for c in cards:
+        if c.card_type not in NON_DROPPABLE_TYPES:
+            visible.append(c)
+        else:
+            cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, c.card_id))
+            if cursor.fetchone():
+                visible.append(c)
+    cards = visible
+
     if cards:
         if len(cards) == 1:
             card = cards[0]
-            
+
             conn = sqlite3.connect('cards_game.db')
             cursor = conn.cursor()
             

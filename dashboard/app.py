@@ -9,7 +9,7 @@ from config import load_config, save_config
 app = Flask(__name__)
 app.secret_key = 'futbot-dashboard-dev'
 
-DB_PATH = os.path.join(os.path.dirname(__file__), '..', 'cards_game.db')
+DB_PATH = r'C:\Users\abhir\OneDrive\Documents\VSCode\FutBot Activity\cards_game.db'
 
 RARITIES = ['Common', 'Uncommon', 'Rare']
 
