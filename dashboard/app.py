@@ -1157,6 +1157,51 @@ def delete_user_achievement(rowid):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# FANTASY CARDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/fantasy_cards')
+def fantasy_cards():
+    search = request.args.get('search', '').strip()
+
+    if is_online():
+        try:
+            rdb = _rdb()
+            if not rdb.table_exists('fantasy_cards'):
+                return render_template('fantasy_cards.html', rows=[], cols=[],
+                                       search='', total=0, table_missing=True)
+            rows = rdb.table_rows('fantasy_cards')
+            cols = rdb.table_columns('fantasy_cards')
+            if search:
+                rows = [r for r in rows if any(
+                    search.lower() in str(v).lower() for v in r.values() if v is not None
+                )]
+        except Exception as e:
+            flash(f'API error: {e}', 'error')
+            rows, cols = [], []
+        return render_template('fantasy_cards.html', rows=rows, cols=cols,
+                               search=search, total=len(rows), table_missing=False)
+
+    # — Local mode —
+    conn = get_db()
+    if not table_exists(conn, 'fantasy_cards'):
+        conn.close()
+        return render_template('fantasy_cards.html', rows=[], cols=[],
+                               search='', total=0, table_missing=True)
+    cols = [r['name'] for r in conn.execute('PRAGMA table_info(fantasy_cards)').fetchall()]
+    query  = 'SELECT * FROM fantasy_cards WHERE 1=1'
+    params = []
+    if search and cols:
+        like_clauses = ' OR '.join(f'CAST({c} AS TEXT) LIKE ?' for c in cols)
+        query  += f' AND ({like_clauses})'
+        params.extend([f'%{search}%'] * len(cols))
+    rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+    conn.close()
+    return render_template('fantasy_cards.html', rows=rows, cols=cols,
+                           search=search, total=len(rows), table_missing=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 

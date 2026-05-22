@@ -48,6 +48,10 @@
          href="{{ url_for('user_achievements') }}">
         <i class="bi bi-star me-1"></i>User Ach.
       </a>
+      <a class="nav-link {% if request.endpoint == 'fantasy_cards' %}active{% endif %}"
+         href="{{ url_for('fantasy_cards') }}">
+        <i class="bi bi-magic me-1"></i>Fantasy
+      </a>
 
       <div class="nav-divider"></div>
 
