@@ -360,11 +360,15 @@ class ChangelogView(discord.ui.View):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.5.2"
+BOT_VERSION = "1.6.3"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 # Sorted Newest to Oldest for better UX
 CHANGELOG_DATA = [
+    "1.6.3 - Duplicate cards: players can now hold multiple copies of the same card, each with its own edition number.",
+    "1.6.2 - /view and /lookup now show all owned editions for duplicate cards. /lookup shows an edition picker when you own multiple copies.",
+    "1.6.1 - Unique-type cards are now hidden from /view and autocomplete for players who don't own them.",
+    "1.6.0 - Battle draw reward increased from 100 to 150 coins.",
     "1.5.2 - Added /delete_deck command for easier deck management.",
     "1.5.1 - Wishlists are now fully interactive buttons on Card Details.",
     "1.5.0 - Overhauled Daily Rewards: Calendar-day streaks with milestone packs!",
@@ -999,21 +1003,11 @@ def get_card_by_name(card_name):
 
 
 def add_card_to_inventory(user_id, card_id):
-    # Check if the card is already in the user's inventory
-    cursor.execute('SELECT * FROM inventories WHERE user_id = ? AND card_id = ?', (user_id, card_id))
-    if cursor.fetchone() is not None:
-        raise ValueError("Card already in inventory")
-
-    # Get the current copies number from the cards table
     cursor.execute('SELECT copies FROM cards WHERE card_id = ?', (card_id,))
     current_copies = cursor.fetchone()[0]
-
-    # Set the edition to the current copies number + 1
-    edition = current_copies 
-
-    cursor.execute('''
-    INSERT INTO inventories (user_id, card_id, edition) VALUES (?, ?, ?)
-    ''', (user_id, card_id, edition))
+    edition = current_copies + 1
+    cursor.execute('UPDATE cards SET copies = copies + 1 WHERE card_id = ?', (card_id,))
+    cursor.execute('INSERT INTO inventories (user_id, card_id, edition) VALUES (?, ?, ?)', (user_id, card_id, edition))
     conn.commit()
 
 
@@ -1300,8 +1294,8 @@ class ViewCardSelect(discord.ui.Select):
         cursor = conn.cursor()
         
         # Ownership
-        cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (self.user.id, card.card_id))
-        inventory_entry = cursor.fetchone()
+        cursor.execute('SELECT edition, trade_count FROM inventories WHERE user_id = ? AND card_id = ? ORDER BY edition', (self.user.id, card.card_id))
+        user_copies = cursor.fetchall()
         
         # Global Stats
         cursor.execute('''
@@ -1324,26 +1318,29 @@ class ViewCardSelect(discord.ui.Select):
         
         conn.close()
 
-        owned_by_user = "Yes" if inventory_entry else "No"
         win_rate = f"{(g_b_won / g_b_played * 100):.1f}%" if g_b_played > 0 else "0%"
 
         # 3. Build the New Embed Style
         embed = discord.Embed(title=f"**{card.name}**", color=discord.Color.blue())
-        
+
         embed.add_field(name="Info", value=f"🆔 {card.card_id}\n💎 {card.card_rarity}\n🏆 {card.card_type}", inline=True)
         embed.add_field(name="Base Stats", value=f"⭐ **{card.overall}** | ⚔️ {card.attack} | 🛡️ {card.defense} | ⚡ {card.speed}", inline=True)
-        
+
         meta_stats = (
             f"❤️ **{wl_count}** Wishlists\n"
             f"⚔️ **Battles:** {g_b_won}/{g_b_played} ({win_rate})\n"
             f"🔄 **Rounds:** {g_r_won}/{g_r_played}"
         )
         embed.add_field(name="Global Statistics", value=meta_stats, inline=False)
-        
-        if owned_by_user == "Yes":
-            trade_count = inventory_entry[0]
-            ownership = "First Owner" if trade_count == 0 else "Traded In"
-            embed.add_field(name="Your Inventory", value=f"✅ Owned ({ownership})", inline=True)
+
+        if user_copies:
+            edition_list = ', '.join(f'#{r[0]}' for r in user_copies)
+            if len(user_copies) == 1:
+                ownership = "First Owner" if user_copies[0][1] == 0 else "Traded In"
+                inv_value = f"✅ 1 copy — Edition {edition_list} ({ownership})"
+            else:
+                inv_value = f"✅ {len(user_copies)} copies — Editions: {edition_list}"
+            embed.add_field(name="Your Inventory", value=inv_value, inline=True)
 
         embed.set_footer(text=f"Requested by {self.user.name}", icon_url=self.user.display_avatar.url)
 
@@ -1528,8 +1525,8 @@ async def view(ctx, *, player_name: str):
             conn = sqlite3.connect('cards_game.db')
             cursor = conn.cursor()
             
-            cursor.execute('SELECT trade_count FROM inventories WHERE user_id = ? AND card_id = ?', (ctx.author.id, card.card_id))
-            inventory_entry = cursor.fetchone()
+            cursor.execute('SELECT edition, trade_count FROM inventories WHERE user_id = ? AND card_id = ? ORDER BY edition', (ctx.author.id, card.card_id))
+            user_copies = cursor.fetchall()
             
             cursor.execute('''
                 SELECT wishlist_count, 
@@ -1550,7 +1547,6 @@ async def view(ctx, *, player_name: str):
             
             conn.close()
             
-            owned_by_user = "Yes" if inventory_entry else "No"
             win_rate = f"{(g_b_won / g_b_played * 100):.1f}%" if g_b_played > 0 else "0%"
 
             embed = discord.Embed(title=f"**{card.name}**", color=discord.Color.blue())
@@ -1564,10 +1560,14 @@ async def view(ctx, *, player_name: str):
             )
             embed.add_field(name="Global Statistics", value=meta_stats, inline=False)
             
-            if owned_by_user == "Yes":
-                trade_count = inventory_entry[0]
-                ownership = "First Owner" if trade_count == 0 else "Traded In"
-                embed.add_field(name="Your Inventory", value=f"✅ Owned ({ownership})", inline=True)
+            if user_copies:
+                edition_list = ', '.join(f'#{r[0]}' for r in user_copies)
+                if len(user_copies) == 1:
+                    ownership = "First Owner" if user_copies[0][1] == 0 else "Traded In"
+                    inv_value = f"✅ 1 copy — Edition {edition_list} ({ownership})"
+                else:
+                    inv_value = f"✅ {len(user_copies)} copies — Editions: {edition_list}"
+                embed.add_field(name="Your Inventory", value=inv_value, inline=True)
 
             embed.set_footer(text=f"Requested by {ctx.author.name}", icon_url=ctx.author.display_avatar.url)
 
@@ -1585,6 +1585,67 @@ async def view(ctx, *, player_name: str):
 
 
 #---------------------------------------------------------LOOKUP-------------------------------------------------------------------------------------
+
+class LookupEditionSelect(discord.ui.Select):
+    def __init__(self, rows, target_user, card_id_int):
+        self.rows_map = {str(row[9]): row for row in rows}
+        self.target_user = target_user
+        self.card_id_int = card_id_int
+        options = [
+            discord.SelectOption(
+                label=f"Edition #{row[9]}/{row[8]}",
+                description=f"Battles: {row[11]}/{row[10]}",
+                value=str(row[9])
+            )
+            for row in rows
+        ]
+        super().__init__(placeholder="Select an edition to inspect...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        row = self.rows_map[self.values[0]]
+        name, overall, atk, def_, spd, rarity, type_, image_path, total_copies, edition, b_played, b_won, r_played, r_won = row
+        edition_str = f"#{edition}/{total_copies}"
+        win_rate = f"{(b_won / b_played * 100):.1f}%" if b_played > 0 else "0%"
+
+        await interaction.response.defer()
+        try:
+            avatar_bytes = await self.target_user.display_avatar.read()
+        except:
+            avatar_bytes = None
+
+        image_buffer = await interaction.client.loop.run_in_executor(
+            None, generate_minted_card, image_path, avatar_bytes, self.target_user.name, edition_str
+        )
+        if not image_buffer:
+            return await interaction.followup.send("❌ Error generating card image.")
+
+        await interaction.edit_original_response(
+            embed=discord.Embed(description=f"Loaded edition #{edition}", color=discord.Color.gold()),
+            view=None
+        )
+        file = discord.File(fp=image_buffer, filename=f"minted_{self.card_id_int}.png")
+        embed = discord.Embed(title=f"🔍 Card Inspection: {name}", color=discord.Color.gold())
+        embed.set_author(name=f"Property of {self.target_user.name}", icon_url=self.target_user.display_avatar.url)
+        embed.add_field(name="Mint Details", value=f"🆔 **ID:** {self.card_id_int}\n#️⃣ **Edition:** {edition_str}", inline=True)
+        embed.add_field(name="Card Info", value=f"💎 {rarity}\n🏆 {type_}", inline=True)
+        embed.add_field(name="Base Stats", value=f"⭐ **{overall}** | ⚔️ {atk} | 🛡️ {def_} | ⚡ {spd}", inline=False)
+        stats_text = f"⚔️ **Battles:** {b_won}/{b_played} ({win_rate})\n🔄 **Rounds:** {r_won}/{r_played}"
+        embed.add_field(name="Match Record (This Copy)", value=stats_text, inline=False)
+        await interaction.followup.send(file=file, embed=embed)
+
+
+class LookupEditionView(discord.ui.View):
+    def __init__(self, rows, target_user, card_id_int):
+        super().__init__(timeout=60)
+        self.add_item(LookupEditionSelect(rows, target_user, card_id_int))
+        self.message = None
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            await self.message.edit(view=self)
+
 
 def generate_minted_card(card_path, avatar_bytes, owner_name, edition_text):
     try:
@@ -1748,15 +1809,27 @@ async def lookup(ctx, card: str, user: discord.User = None):
         WHERE i.user_id = ? AND i.card_id = ?
     ''', (target_user.id, card_id_int))
     
-    result = cursor.fetchone()
+    results = cursor.fetchall()
     conn.close()
 
     # 3. Handle "User doesn't own it"
-    if not result:
+    if not results:
         return await ctx.send(f"❌ **{target_user.name}** does not own Card ID `{card_id_int}`.")
 
-    # 4. Success - Generate Image
-    name, overall, atk, def_, spd, rarity, type_, image_path, total_copies, edition, b_played, b_won, r_played, r_won = result
+    # 4a. Multiple copies — show edition picker
+    if len(results) > 1:
+        view = LookupEditionView(results, target_user, card_id_int)
+        embed = discord.Embed(
+            title=f"📋 Multiple Editions — {results[0][0]}",
+            description=f"**{target_user.name}** owns **{len(results)} copies**. Select an edition to inspect.",
+            color=discord.Color.gold()
+        )
+        msg = await ctx.send(embed=embed, view=view)
+        view.message = msg
+        return
+
+    # 4b. Single copy — generate slab directly
+    name, overall, atk, def_, spd, rarity, type_, image_path, total_copies, edition, b_played, b_won, r_played, r_won = results[0]
     
     edition_str = f"#{edition}/{total_copies}"
     win_rate = f"{(b_won / b_played * 100):.1f}%" if b_played > 0 else "0%"
@@ -2769,19 +2842,15 @@ class TradeView(discord.ui.View):
         try:
             # --- FIX: Update user_id AND increment trade_count ---
             
-            # 1. Move Author's card to Other User (Increment trade_count)
-            cursor.execute('''
-                UPDATE inventories 
-                SET user_id = ?, trade_count = trade_count + 1 
-                WHERE user_id = ? AND card_id = ?
-            ''', (self.other_user.id, self.ctx.author.id, self.your_card.card_id))
-            
-            # 2. Move Other User's card to Author (Increment trade_count)
-            cursor.execute('''
-                UPDATE inventories 
-                SET user_id = ?, trade_count = trade_count + 1 
-                WHERE user_id = ? AND card_id = ?
-            ''', (self.ctx.author.id, self.other_user.id, self.their_card.card_id))
+            # 1. Move Author's card to Other User (one copy via rowid)
+            cursor.execute('SELECT rowid FROM inventories WHERE user_id = ? AND card_id = ? LIMIT 1', (self.ctx.author.id, self.your_card.card_id))
+            your_rowid = cursor.fetchone()[0]
+            cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE rowid = ?', (self.other_user.id, your_rowid))
+
+            # 2. Move Other User's card to Author (one copy via rowid)
+            cursor.execute('SELECT rowid FROM inventories WHERE user_id = ? AND card_id = ? LIMIT 1', (self.other_user.id, self.their_card.card_id))
+            their_rowid = cursor.fetchone()[0]
+            cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE rowid = ?', (self.ctx.author.id, their_rowid))
             
             conn.commit()
         except Exception as e:
@@ -2855,14 +2924,7 @@ async def trade(ctx, your_card_id: int, other_user: discord.User, their_card_id:
     if not check_card_ownership(other_user.id, their_card_id):
         return await ctx.send(f"{other_user.name} does not own the card **{their_card.name}** (ID: {their_card_id}).")
 
-    # 4. Duplicate Checks
-    if check_card_ownership(ctx.author.id, their_card_id):
-        return await ctx.send(f"You already own **{their_card.name}**. Cannot trade for duplicates.")
-    
-    if check_card_ownership(other_user.id, your_card_id):
-        return await ctx.send(f"{other_user.name} already owns **{your_card.name}**. Cannot trade duplicates.")
-
-    # 5. Build UI
+    # 4. Build UI
     view = TradeView(ctx, your_card, other_user, their_card)
     
     embed = discord.Embed(title="🤝 Trade Offer", description=f"{ctx.author.mention} wants to trade with {other_user.mention}!", color=discord.Color.gold())
@@ -2999,16 +3061,6 @@ class ExchangeAddCardModal(discord.ui.Modal, title="Add Card to Exchange"):
         if not check_card_ownership(interaction.user.id, card_id):
             return await interaction.response.send_message("You do not own this card.", ephemeral=True)
 
-        # 2. Check if OPPONENT owns it (The Fix)
-        # Determine who the receiver is based on who is clicking
-        if self.user_side == 'p1':
-            receiver = self.exchange_view.session.p2
-        else:
-            receiver = self.exchange_view.session.p1
-            
-        if check_card_ownership(receiver.id, card_id):
-            return await interaction.response.send_message(f"⛔ **{receiver.name}** already owns this card! No duplicates allowed.", ephemeral=True)
-
         card = get_card_by_id(card_id)
         if not card:
             return await interaction.response.send_message("Card not found.", ephemeral=True)
@@ -3054,12 +3106,7 @@ class ExchangeCardSearchSelect(discord.ui.Select):
         if not check_card_ownership(user.id, card_id):
             return await interaction.response.send_message("❌ You no longer own this card.", ephemeral=True)
 
-        # 2. Duplicate Check
-        opponent = self.exchange_view.session.p2 if self.side == 'p1' else self.exchange_view.session.p1
-        if check_card_ownership(opponent.id, card_id):
-             return await interaction.response.send_message(f"⛔ **{opponent.name}** already owns this card!", ephemeral=True)
-
-        # 3. Add to Offer
+        # 2. Add to Offer
         card = get_card_by_id(card_id)
         current_offer = self.exchange_view.session.p1_offer['cards'] if self.side == 'p1' else self.exchange_view.session.p2_offer['cards']
         
@@ -3185,21 +3232,15 @@ class ExchangeView(discord.ui.View):
             cursor.execute('SELECT coins FROM players WHERE user_id = ?', (self.session.p2.id,))
             if cursor.fetchone()[0] < self.session.p2_offer['coins']: raise ValueError(f"{self.session.p2.name} missing coins.")
 
-            # Check P1 Cards Ownership & P2 Duplicate Check
+            # Check P1 Cards Ownership
             for card in self.session.p1_offer['cards']:
                 cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p1.id, card.card_id))
                 if not cursor.fetchone(): raise ValueError(f"{self.session.p1.name} no longer owns {card.name}")
-                
-                cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p2.id, card.card_id))
-                if cursor.fetchone(): raise ValueError(f"{self.session.p2.name} already owns {card.name}")
 
-            # Check P2 Cards Ownership & P1 Duplicate Check
+            # Check P2 Cards Ownership
             for card in self.session.p2_offer['cards']:
                 cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p2.id, card.card_id))
                 if not cursor.fetchone(): raise ValueError(f"{self.session.p2.name} no longer owns {card.name}")
-                
-                cursor.execute('SELECT 1 FROM inventories WHERE user_id = ? AND card_id = ?', (self.session.p1.id, card.card_id))
-                if cursor.fetchone(): raise ValueError(f"{self.session.p1.name} already owns {card.name}")
 
             # 2. EXECUTE SWAPS (Coins)
             if self.session.p1_offer['coins'] > 0:
@@ -3212,10 +3253,14 @@ class ExchangeView(discord.ui.View):
 
             # 3. EXECUTE SWAPS (Cards)
             for card in self.session.p1_offer['cards']:
-                cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE card_id = ?', (self.session.p2.id, card.card_id))
-            
+                cursor.execute('SELECT rowid FROM inventories WHERE user_id = ? AND card_id = ? LIMIT 1', (self.session.p1.id, card.card_id))
+                rowid = cursor.fetchone()[0]
+                cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE rowid = ?', (self.session.p2.id, rowid))
+
             for card in self.session.p2_offer['cards']:
-                cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE card_id = ?', (self.session.p1.id, card.card_id))
+                cursor.execute('SELECT rowid FROM inventories WHERE user_id = ? AND card_id = ? LIMIT 1', (self.session.p2.id, card.card_id))
+                rowid = cursor.fetchone()[0]
+                cursor.execute('UPDATE inventories SET user_id = ?, trade_count = trade_count + 1 WHERE rowid = ?', (self.session.p1.id, rowid))
 
             conn.commit()
             

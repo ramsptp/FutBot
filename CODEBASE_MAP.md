@@ -17,7 +17,8 @@
 | 976-1092 | **Card Weights & Drop Logic** (incl. `NON_DROPPABLE_TYPES`) |
 | 1088-1232 | **Auto-Drop, Starter Pack** |
 | 1237-1556 | **View Command + Card Details UI** |
-| 1557-1769 | **Lookup (Minted Card)** |
+| 1557-1638 | **Lookup Edition Picker** (`LookupEditionSelect`, `LookupEditionView`) |
+| 1639-1830 | **Lookup (Minted Card)** |
 | 1770-2083 | **Daily, Drop** |
 | 2084-2234 | **Stats, Titles** |
 | 2235-2476 | **Leaderboards** |
@@ -108,7 +109,9 @@
 | `ViewCardSelectView` | View container | 1344-1348 |
 | `ToggleWishlistButton` | Add/remove wishlist | 1351-1438 |
 | `CardDetailsView` | Card view container | 1440-1452 |
-| `DailyView` | Daily reward UI | 1774-1777 |
+| `LookupEditionSelect` | Edition picker dropdown for /lookup | ~1557 |
+| `LookupEditionView` | Edition picker container | ~1600 |
+| `DailyView` | Daily reward UI | ~1840 |
 | `CollectCardButton` | Daily collect | 2241-2279 |
 | `TimedCollectButton` | Timed drop collect | 2091-2135 |
 | `DropView` | Drop UI container | 2086-2089 |
@@ -171,7 +174,7 @@
 | `add_card` | Insert card to DB | 968-975 |
 | `get_card_by_name` | Fuzzy card search | 978-987 |
 | `get_card_by_id` | Get card by ID | 501-509 |
-| `add_card_to_inventory` | Add to inventory | 990-1006 |
+| `add_card_to_inventory` | Add to inventory (duplicates allowed) | 990-1001 |
 | `remove_card_from_inventory` | Remove from inv | 4035-4040 |
 | `get_player_inventory` | Get user cards | 1011-1019 |
 | `fetch_all_cards` | Load all cards | 1021-1024 |
@@ -236,4 +239,4 @@
 
 ---
 
-**Last Updated:** Mar 2026
+**Last Updated:** May 2026
