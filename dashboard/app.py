@@ -9,7 +9,7 @@ from config import load_config, save_config
 app = Flask(__name__)
 app.secret_key = 'futbot-dashboard-dev'
 
-DB_PATH = r'C:\Users\abhir\OneDrive\Documents\VSCode\FutBot Activity\cards_game.db'
+DB_PATH = r'C:\Users\abhir\OneDrive\Documents\VSCode\FutBot\cards_game.db'
 
 RARITIES = ['Common', 'Uncommon', 'Rare']
 
@@ -1154,6 +1154,139 @@ def delete_user_achievement(rowid):
     conn.close()
     flash('User achievement removed.', 'success')
     return redirect(url_for('user_achievements'))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRANSFER MARKET
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _market_time_left(expires_at_str):
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        expires = _dt.strptime(expires_at_str, '%Y-%m-%d %H:%M:%S')
+        delta = expires - _dt.now(_tz.utc).replace(tzinfo=None)
+        if delta.total_seconds() <= 0:
+            return 'Expired'
+        h, rem = divmod(int(delta.total_seconds()), 3600)
+        m = rem // 60
+        return f"{h}h {m}m"
+    except:
+        return '?'
+
+
+@app.route('/market_listings')
+def market_listings():
+    search      = request.args.get('search', '').strip()
+    status_filter = request.args.get('status', 'active')   # active / sold / cancelled / expired / all
+
+    if is_online():
+        try:
+            rdb = _rdb()
+            if not rdb.table_exists('market_listings'):
+                return render_template('market_listings.html', rows=[], search=search,
+                                       status_filter=status_filter, total=0, table_missing=True)
+            ml_rows   = rdb.table_rows('market_listings')
+            card_rows = rdb.table_rows('cards')
+            plyr_rows = rdb.table_rows('players')
+            card_map  = {c['card_id']: c for c in card_rows}
+            plyr_map  = {p['user_id']: p for p in plyr_rows}
+            enriched = []
+            for row in ml_rows:
+                r = dict(row)
+                card  = card_map.get(r.get('card_id'), {})
+                plyr  = plyr_map.get(r.get('seller_id'), {})
+                buyer = plyr_map.get(r.get('buyer_id'), {})
+                r['card_name']   = card.get('name', '')
+                r['overall']     = card.get('overall', '')
+                r['card_rarity'] = card.get('card_rarity', '')
+                r['seller_name'] = plyr.get('name', '')
+                r['buyer_name']  = buyer.get('name', '') if r.get('buyer_id') else ''
+                r['time_left']   = _market_time_left(r.get('expires_at', '')) if r.get('status') == 'active' else '—'
+                enriched.append(r)
+            if status_filter != 'all':
+                enriched = [r for r in enriched if r.get('status') == status_filter]
+            if search:
+                enriched = [r for r in enriched if
+                            search.lower() in (r.get('card_name') or '').lower() or
+                            search.lower() in (r.get('seller_name') or '').lower()]
+            enriched.sort(key=lambda r: r.get('listed_at') or '', reverse=True)
+        except Exception as e:
+            flash(f'API error: {e}', 'error')
+            enriched = []
+        return render_template('market_listings.html', rows=enriched, search=search,
+                               status_filter=status_filter, total=len(enriched), table_missing=False)
+
+    # — Local mode —
+    conn = get_db()
+    if not table_exists(conn, 'market_listings'):
+        conn.close()
+        return render_template('market_listings.html', rows=[], search=search,
+                               status_filter=status_filter, total=0, table_missing=True)
+
+    query = '''
+        SELECT ml.listing_id, ml.seller_id, p.name AS seller_name,
+               ml.card_id, c.name AS card_name, c.overall, c.card_rarity,
+               ml.edition, ml.price, ml.listed_at, ml.expires_at, ml.trade_count,
+               ml.status, ml.resolved_at, ml.buyer_id,
+               bp.name AS buyer_name
+        FROM market_listings ml
+        JOIN cards   c  ON ml.card_id   = c.card_id
+        JOIN players p  ON ml.seller_id = p.user_id
+        LEFT JOIN players bp ON ml.buyer_id = bp.user_id
+        WHERE 1=1
+    '''
+    params = []
+    if status_filter != 'all':
+        query += ' AND ml.status = ?'
+        params.append(status_filter)
+    if search:
+        query += ' AND (c.name LIKE ? OR p.name LIKE ?)'
+        params += [f'%{search}%', f'%{search}%']
+    query += ' ORDER BY ml.listed_at DESC'
+
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+
+    enriched = []
+    for row in rows:
+        r = dict(row)
+        r['time_left'] = _market_time_left(r.get('expires_at', '')) if r.get('status') == 'active' else '—'
+        enriched.append(r)
+
+    return render_template('market_listings.html', rows=enriched, search=search,
+                           status_filter=status_filter, total=len(enriched), table_missing=False)
+
+
+@app.route('/market_listings/<int:listing_id>/delete', methods=['POST'])
+def delete_market_listing(listing_id):
+    if is_online():
+        try:
+            _rdb().delete('market_listings', listing_id)
+            flash('Listing removed.', 'success')
+        except Exception as e:
+            flash(f'API error: {e}', 'error')
+        return redirect(url_for('market_listings'))
+
+    # — Local mode — hard delete (admin action)
+    conn = get_db()
+    row = conn.execute(
+        'SELECT seller_id, card_id, edition, trade_count, status FROM market_listings WHERE listing_id = ?', (listing_id,)
+    ).fetchone()
+    if row:
+        if row['status'] == 'active':
+            conn.execute(
+                'INSERT INTO inventories (user_id, card_id, edition, trade_count) VALUES (?, ?, ?, ?)',
+                (row['seller_id'], row['card_id'], row['edition'], row['trade_count'])
+            )
+            flash('Listing removed — card returned to seller\'s inventory.', 'success')
+        else:
+            flash('Listing record deleted.', 'success')
+        conn.execute('DELETE FROM market_listings WHERE listing_id = ?', (listing_id,))
+        conn.commit()
+    else:
+        flash('Listing not found.', 'error')
+    conn.close()
+    return redirect(url_for('market_listings'))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

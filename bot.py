@@ -184,9 +184,19 @@ def migrate_db():
                 trade_count INTEGER DEFAULT 0,
                 price       INTEGER,
                 listed_at   TEXT DEFAULT CURRENT_TIMESTAMP,
-                expires_at  TEXT
+                expires_at  TEXT,
+                status      TEXT DEFAULT 'active',
+                resolved_at TEXT,
+                buyer_id    INTEGER
             )
         ''')
+        cursor.execute("PRAGMA table_info(market_listings)")
+        ml_cols = [r[1] for r in cursor.fetchall()]
+        for col, defn in [('status', "TEXT DEFAULT 'active'"),
+                          ('resolved_at', 'TEXT'),
+                          ('buyer_id', 'INTEGER')]:
+            if col not in ml_cols:
+                cursor.execute(f'ALTER TABLE market_listings ADD COLUMN {col} {defn}')
 
         conn.commit()
         conn.close()
@@ -374,11 +384,14 @@ class ChangelogView(discord.ui.View):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.6.5"
+BOT_VERSION = "1.6.6"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 # Sorted Newest to Oldest for better UX
 CHANGELOG_DATA = [
+    "1.6.6 - Transfer market now keeps full history of all listings (sold, cancelled, expired) with status tracking.",
+    "1.6.6 - Trade up reward card image now displays inside the embed instead of as a separate message.",
+    "1.6.6 - Trade up rare pool now uses weighted category selection — Rare Standard cards are far more common than Hero/Icon.",
     "1.6.5 - Trade Up: sacrifice 5 cards of a rarity for 1 of the next tier via /tradeup.",
     "1.6.4 - Transfer Market: list, browse, buy, and unlist cards with /list, /market, /listed, /unlist.",
     "1.6.4 - Fixed edition numbering — copies no longer double-increments when a card is given or dropped.",
@@ -5627,13 +5640,16 @@ class TradeUpConfirmView(discord.ui.View):
             return await interaction.response.send_message("❌ Trade up failed.", ephemeral=True)
         conn.close()
 
+        filename = f"card_{result_card_id}.png"
         embed = discord.Embed(title=f"✨ Trade Up Complete! — {name}", color=discord.Color.purple())
         embed.set_author(name=f"Rewarded to {self.user.name}", icon_url=self.user.display_avatar.url)
         embed.add_field(name="Info", value=f"🆔 {result_card_id}\n💎 {rarity}\n🏆 {card_type}", inline=True)
         embed.add_field(name="Base Stats", value=f"⭐ **{overall}** | ⚔️ {atk} | 🛡️ {def_} | ⚡ {spd}", inline=True)
         embed.add_field(name="Your Copy", value=f"#️⃣ Edition #{edition}\n✅ Added to inventory", inline=True)
-        await interaction.response.edit_message(embed=embed, attachments=[], view=None)
-        await interaction.followup.send(file=discord.File(image_path))
+        embed.set_image(url=f"attachment://{filename}")
+        await interaction.response.edit_message(
+            embed=embed, attachments=[discord.File(image_path, filename=filename)], view=None
+        )
         self.stop()
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
@@ -5760,7 +5776,7 @@ class MarketConfirmButton(discord.ui.Button):
             if not row:
                 conn.close()
                 return await interaction.response.send_message("❌ You no longer own this copy.", ephemeral=True)
-            cursor.execute('SELECT 1 FROM market_listings WHERE seller_id = ? AND card_id = ? AND edition = ?',
+            cursor.execute("SELECT 1 FROM market_listings WHERE seller_id = ? AND card_id = ? AND edition = ? AND status = 'active'",
                            (self.view.seller.id, self.view.card.card_id, self.view.edition))
             if cursor.fetchone():
                 conn.close()
@@ -5903,7 +5919,6 @@ MARKET_PAGE_SIZE = 5
 def _fetch_listings(search='', page=0):
     conn = sqlite3.connect('cards_game.db')
     cursor = conn.cursor()
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     query = '''
         SELECT ml.listing_id, ml.seller_id, ml.card_id, ml.edition,
                ml.price, ml.expires_at,
@@ -5912,9 +5927,9 @@ def _fetch_listings(search='', page=0):
         FROM market_listings ml
         JOIN cards c  ON ml.card_id  = c.card_id
         JOIN players p ON ml.seller_id = p.user_id
-        WHERE ml.expires_at > ?
+        WHERE ml.status = 'active'
     '''
-    params = [now]
+    params = []
     if search:
         query += ' AND c.name LIKE ?'
         params.append(f'%{search}%')
@@ -5939,8 +5954,8 @@ class MarketBuyButton(discord.ui.Button):
         cursor = conn.cursor()
         now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute(
-            'SELECT seller_id, card_id, edition, trade_count, price FROM market_listings WHERE listing_id = ? AND expires_at > ?',
-            (self.listing_id, now)
+            "SELECT seller_id, card_id, edition, trade_count, price FROM market_listings WHERE listing_id = ? AND status = 'active'",
+            (self.listing_id,)
         )
         listing = cursor.fetchone()
         if not listing:
@@ -5964,7 +5979,10 @@ class MarketBuyButton(discord.ui.Button):
                 'INSERT INTO inventories (user_id, card_id, edition, trade_count) VALUES (?, ?, ?, ?)',
                 (interaction.user.id, card_id, edition, trade_count + 1)
             )
-            cursor.execute('DELETE FROM market_listings WHERE listing_id = ?', (self.listing_id,))
+            cursor.execute(
+                "UPDATE market_listings SET status='sold', resolved_at=?, buyer_id=? WHERE listing_id=?",
+                (datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'), interaction.user.id, self.listing_id)
+            )
             conn.commit()
         except Exception as e:
             conn.close()
@@ -6052,18 +6070,21 @@ async def unlist(ctx, listing_id: int):
     conn = sqlite3.connect('cards_game.db')
     cursor = conn.cursor()
     cursor.execute(
-        'SELECT card_id, edition, trade_count FROM market_listings WHERE listing_id = ? AND seller_id = ?',
+        "SELECT card_id, edition, trade_count FROM market_listings WHERE listing_id = ? AND seller_id = ? AND status = 'active'",
         (listing_id, ctx.author.id)
     )
     listing = cursor.fetchone()
     if not listing:
         conn.close()
-        return await ctx.send("❌ Listing not found or it's not yours.")
+        return await ctx.send("❌ Listing not found, already sold, or it's not yours.")
     card_id, edition, trade_count = listing
     try:
         cursor.execute('INSERT INTO inventories (user_id, card_id, edition, trade_count) VALUES (?, ?, ?, ?)',
                        (ctx.author.id, card_id, edition, trade_count))
-        cursor.execute('DELETE FROM market_listings WHERE listing_id = ?', (listing_id,))
+        cursor.execute(
+            "UPDATE market_listings SET status='cancelled', resolved_at=? WHERE listing_id=?",
+            (datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'), listing_id)
+        )
         conn.commit()
     except Exception as e:
         conn.close()
@@ -6079,14 +6100,13 @@ async def listed(ctx):
     ensure_player_exists(ctx.author.id, ctx.author.name)
     conn = sqlite3.connect('cards_game.db')
     cursor = conn.cursor()
-    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute('''
         SELECT ml.listing_id, ml.card_id, ml.edition, ml.price, ml.expires_at, c.name, c.overall, c.card_rarity
         FROM market_listings ml
         JOIN cards c ON ml.card_id = c.card_id
-        WHERE ml.seller_id = ? AND ml.expires_at > ?
+        WHERE ml.seller_id = ? AND ml.status = 'active'
         ORDER BY ml.listed_at DESC
-    ''', (ctx.author.id, now))
+    ''', (ctx.author.id,))
     rows = cursor.fetchall()
     conn.close()
 
@@ -6114,13 +6134,16 @@ async def expire_market_listings():
     cursor = conn.cursor()
     now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     cursor.execute(
-        'SELECT listing_id, seller_id, card_id, edition, trade_count FROM market_listings WHERE expires_at <= ?', (now,)
+        "SELECT listing_id, seller_id, card_id, edition, trade_count FROM market_listings WHERE expires_at <= ? AND status = 'active'", (now,)
     )
     expired = cursor.fetchall()
     for listing_id, seller_id, card_id, edition, trade_count in expired:
         cursor.execute('INSERT INTO inventories (user_id, card_id, edition, trade_count) VALUES (?, ?, ?, ?)',
                        (seller_id, card_id, edition, trade_count))
-        cursor.execute('DELETE FROM market_listings WHERE listing_id = ?', (listing_id,))
+        cursor.execute(
+            "UPDATE market_listings SET status='expired', resolved_at=? WHERE listing_id=?",
+            (now, listing_id)
+        )
     if expired:
         conn.commit()
         logger.info(f"Expired {len(expired)} market listing(s).")

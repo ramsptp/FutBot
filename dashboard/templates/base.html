@@ -52,6 +52,10 @@
          href="{{ url_for('fantasy_cards') }}">
         <i class="bi bi-magic me-1"></i>Fantasy
       </a>
+      <a class="nav-link {% if request.endpoint in ('market_listings','delete_market_listing') %}active{% endif %}"
+         href="{{ url_for('market_listings') }}">
+        <i class="bi bi-shop me-1"></i>Market
+      </a>
 
       <div class="nav-divider"></div>
 
