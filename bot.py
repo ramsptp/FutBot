@@ -3431,9 +3431,9 @@ class Battle:
             cursor.execute('UPDATE players SET battles_played = battles_played + 1, battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
             
             # Update Coins
-            cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player1.id,))
-            cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player2.id,))
-            
+            cursor.execute('UPDATE players SET coins = coins + 150 WHERE user_id = ?', (self.player1.id,))
+            cursor.execute('UPDATE players SET coins = coins + 150 WHERE user_id = ?', (self.player2.id,))
+
             conn.commit()
         except Exception as e:
             logger.error(f"Draw DB Error: {e}")
@@ -3441,7 +3441,7 @@ class Battle:
             conn.close()
 
         embed = discord.Embed(title="🤝 Battle Drawn", description="Both players agreed to a mutual draw.", color=discord.Color.greyple())
-        embed.add_field(name="Rewards", value="Both players received +100 Coins", inline=False)
+        embed.add_field(name="Rewards", value="Both players received +150 Coins", inline=False)
         
         await self.message.edit(embed=embed, view=None)
         try:
@@ -3519,8 +3519,8 @@ class Battle:
             if is_draw:
                 cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player1.id,))
                 cursor.execute('UPDATE players SET battles_drawn = battles_drawn + 1 WHERE user_id = ?', (self.player2.id,))
-                cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player1.id,))
-                cursor.execute('UPDATE players SET coins = coins + 100 WHERE user_id = ?', (self.player2.id,))
+                cursor.execute('UPDATE players SET coins = coins + 150 WHERE user_id = ?', (self.player1.id,))
+                cursor.execute('UPDATE players SET coins = coins + 150 WHERE user_id = ?', (self.player2.id,))
                 
                 update_deck_stats(self.player1_deck, self.player1, False)
                 update_deck_stats(self.player2_deck, self.player2, False)
