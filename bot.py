@@ -374,11 +374,12 @@ class ChangelogView(discord.ui.View):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.6.4"
+BOT_VERSION = "1.6.5"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 # Sorted Newest to Oldest for better UX
 CHANGELOG_DATA = [
+    "1.6.5 - Trade Up: sacrifice 5 cards of a rarity for 1 of the next tier via /tradeup.",
     "1.6.4 - Transfer Market: list, browse, buy, and unlist cards with /list, /market, /listed, /unlist.",
     "1.6.4 - Fixed edition numbering — copies no longer double-increments when a card is given or dropped.",
     "1.6.3 - Duplicate cards: players can now hold multiple copies of the same card, each with its own edition number.",
@@ -5481,6 +5482,223 @@ async def wishlist(ctx, card_id: int):
         await ctx.send("An error occurred updating your wishlist.")
     finally:
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRADE UP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TradeUpSelect(discord.ui.Select):
+    def __init__(self, eligible, tier):
+        self.tier = tier
+        self.rowid_map = {str(row[0]): row for row in eligible}
+        options = [
+            discord.SelectOption(
+                label=f"{row[1][:50]} (#{row[3]})",
+                description=f"⭐{row[2]} | {row[5]}",
+                value=str(row[0])
+            )
+            for row in eligible[:25]
+        ]
+        super().__init__(placeholder="Select exactly 5 cards to sacrifice...",
+                         min_values=5, max_values=5, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_cards = [self.rowid_map[v] for v in self.values]
+        selected_rowids = [int(v) for v in self.values]
+        card_list = '\n'.join(f"• {r[1]} ⭐{r[2]} (Edition #{r[3]})" for r in selected_cards)
+
+        target_labels = {
+            'common':   'a random **Uncommon**',
+            'uncommon': 'a random **Rare**',
+            'rare':     'a random **Hero or Icon** (≤ 93 OVR)',
+        }
+        embed = discord.Embed(
+            title="🔄 Confirm Trade Up",
+            description=f"Sacrifice these 5 cards for {target_labels[self.tier]}?",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Sacrificing", value=card_list, inline=False)
+        embed.set_footer(text="This cannot be undone.")
+
+        view = TradeUpConfirmView(interaction.user, selected_rowids, self.tier)
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+class TradeUpConfirmView(discord.ui.View):
+    def __init__(self, user, rowids, tier):
+        super().__init__(timeout=60)
+        self.user = user
+        self.rowids = rowids
+        self.tier = tier
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.green)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("This isn't yours.", ephemeral=True)
+
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        try:
+            # Verify all 5 cards are still owned
+            for rowid in self.rowids:
+                cursor.execute('SELECT 1 FROM inventories WHERE rowid = ? AND user_id = ?',
+                               (rowid, self.user.id))
+                if not cursor.fetchone():
+                    conn.close()
+                    return await interaction.response.send_message(
+                        "❌ One or more cards are no longer in your inventory.", ephemeral=True)
+
+            # Pick result card
+            result_card_id = None
+            if self.tier == 'common':
+                cursor.execute(
+                    "SELECT card_id FROM cards WHERE card_rarity = 'Uncommon' AND card_type != 'Unique' ORDER BY RANDOM() LIMIT 1")
+                row = cursor.fetchone()
+                if row:
+                    result_card_id = row[0]
+
+            elif self.tier == 'uncommon':
+                # Two-step: pick category by weight, then random card from that category.
+                # This gives exact probabilities regardless of how many cards are in each bucket.
+                TRADEUP_RARE_CATEGORIES = [
+                    ('std_lo',  55),   # Rare Standard 80-85
+                    ('std_mid', 15),   # Rare Standard 86-89
+                    ('std_hi',  10),   # Rare Standard 90+
+                    ('hero',    10),
+                    ('icon',     6),
+                ]
+                chosen = random.choices(
+                    [c[0] for c in TRADEUP_RARE_CATEGORIES],
+                    weights=[c[1] for c in TRADEUP_RARE_CATEGORIES], k=1
+                )[0]
+
+                queries = {
+                    'std_lo':  ("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' AND overall BETWEEN 80 AND 85", []),
+                    'std_mid': ("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' AND overall BETWEEN 86 AND 89", []),
+                    'std_hi':  ("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' AND overall >= 90", []),
+                    'hero':    ("SELECT card_id FROM cards WHERE card_type='Hero'", []),
+                    'icon':    ("SELECT card_id FROM cards WHERE card_type='Icon'", []),
+                }
+                sql, params = queries[chosen]
+                cursor.execute(sql, params)
+                pool = [r[0] for r in cursor.fetchall()]
+
+                if pool:
+                    result_card_id = random.choice(pool)
+                else:
+                    # Fallback: any Rare Standard if chosen bucket is empty
+                    cursor.execute("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' ORDER BY RANDOM() LIMIT 1")
+                    row = cursor.fetchone()
+                    if row:
+                        result_card_id = row[0]
+
+            else:  # rare → Hero/Icon ≤93
+                cursor.execute(
+                    "SELECT card_id FROM cards WHERE card_type IN ('Hero', 'Icon') AND overall <= 93 ORDER BY RANDOM() LIMIT 1")
+                row = cursor.fetchone()
+                if row:
+                    result_card_id = row[0]
+
+            if not result_card_id:
+                conn.close()
+                return await interaction.response.send_message(
+                    "❌ No eligible reward cards found.", ephemeral=True)
+
+            # Remove sacrificed cards
+            for rowid in self.rowids:
+                cursor.execute('DELETE FROM inventories WHERE rowid = ?', (rowid,))
+
+            # Give result card (manual increment to stay in same transaction)
+            cursor.execute('SELECT copies FROM cards WHERE card_id = ?', (result_card_id,))
+            edition = cursor.fetchone()[0] + 1
+            cursor.execute('UPDATE cards SET copies = copies + 1 WHERE card_id = ?', (result_card_id,))
+            cursor.execute('INSERT INTO inventories (user_id, card_id, edition) VALUES (?, ?, ?)',
+                           (self.user.id, result_card_id, edition))
+            conn.commit()
+
+            cursor.execute(
+                'SELECT name, overall, card_rarity, card_type, attack, defense, speed, image_path FROM cards WHERE card_id = ?',
+                (result_card_id,))
+            name, overall, rarity, card_type, atk, def_, spd, image_path = cursor.fetchone()
+        except Exception as e:
+            conn.close()
+            logger.error(f"Trade up error: {e}")
+            return await interaction.response.send_message("❌ Trade up failed.", ephemeral=True)
+        conn.close()
+
+        embed = discord.Embed(title=f"✨ Trade Up Complete! — {name}", color=discord.Color.purple())
+        embed.set_author(name=f"Rewarded to {self.user.name}", icon_url=self.user.display_avatar.url)
+        embed.add_field(name="Info", value=f"🆔 {result_card_id}\n💎 {rarity}\n🏆 {card_type}", inline=True)
+        embed.add_field(name="Base Stats", value=f"⭐ **{overall}** | ⚔️ {atk} | 🛡️ {def_} | ⚡ {spd}", inline=True)
+        embed.add_field(name="Your Copy", value=f"#️⃣ Edition #{edition}\n✅ Added to inventory", inline=True)
+        await interaction.response.edit_message(embed=embed, attachments=[], view=None)
+        await interaction.followup.send(file=discord.File(image_path))
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("This isn't yours.", ephemeral=True)
+        await interaction.response.edit_message(content="Trade up cancelled.", embed=None, view=None)
+        self.stop()
+
+
+@bot.hybrid_command(name='tradeup', description="Sacrifice 5 cards of one rarity for 1 of a higher rarity")
+@app_commands.describe(tier="Which rarity tier to trade up from")
+@app_commands.choices(tier=[
+    app_commands.Choice(name="Common → Uncommon (5 Commons)", value="common"),
+    app_commands.Choice(name="Uncommon → Rare (5 Uncommons)", value="uncommon"),
+    app_commands.Choice(name="Rare Standard → Hero/Icon ≤93 OVR (5 Rare Standards)", value="rare"),
+])
+async def tradeup(ctx, tier: str):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+
+    if tier == 'common':
+        cursor.execute('''
+            SELECT i.rowid, c.name, c.overall, i.edition, c.card_rarity, c.card_type
+            FROM inventories i JOIN cards c ON i.card_id = c.card_id
+            WHERE i.user_id = ? AND c.card_rarity = 'Common'
+            ORDER BY c.overall ASC
+        ''', (ctx.author.id,))
+    elif tier == 'uncommon':
+        cursor.execute('''
+            SELECT i.rowid, c.name, c.overall, i.edition, c.card_rarity, c.card_type
+            FROM inventories i JOIN cards c ON i.card_id = c.card_id
+            WHERE i.user_id = ? AND c.card_rarity = 'Uncommon'
+            ORDER BY c.overall ASC
+        ''', (ctx.author.id,))
+    else:
+        cursor.execute('''
+            SELECT i.rowid, c.name, c.overall, i.edition, c.card_rarity, c.card_type
+            FROM inventories i JOIN cards c ON i.card_id = c.card_id
+            WHERE i.user_id = ? AND c.card_rarity = 'Rare' AND c.card_type = 'Standard'
+            ORDER BY c.overall ASC
+        ''', (ctx.author.id,))
+
+    eligible = cursor.fetchall()
+    conn.close()
+
+    tier_names = {'common': 'Common', 'uncommon': 'Uncommon', 'rare': 'Rare Standard'}
+    tier_rewards = {'common': 'Uncommon', 'uncommon': 'Rare', 'rare': 'Hero/Icon (≤ 93 OVR)'}
+
+    if len(eligible) < 5:
+        return await ctx.send(
+            f"❌ You need at least **5 {tier_names[tier]}** cards to trade up. You have **{len(eligible)}**.")
+
+    embed = discord.Embed(
+        title="🔄 Trade Up",
+        description=f"Select **5 {tier_names[tier]}** cards to sacrifice for a random **{tier_rewards[tier]}**.",
+        color=discord.Color.purple()
+    )
+    embed.set_footer(text=f"You have {len(eligible)} eligible card(s) · Sorted lowest OVR first")
+
+    view = discord.ui.View(timeout=60)
+    view.add_item(TradeUpSelect(eligible, tier))
+    await ctx.send(embed=embed, view=view)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
