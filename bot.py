@@ -174,6 +174,20 @@ def migrate_db():
                 else:
                     cursor.execute(f"ALTER TABLE players ADD COLUMN {col} TEXT DEFAULT NULL")
 
+        # --- Transfer Market ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS market_listings (
+                listing_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+                seller_id   INTEGER,
+                card_id     INTEGER,
+                edition     INTEGER DEFAULT 1,
+                trade_count INTEGER DEFAULT 0,
+                price       INTEGER,
+                listed_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+                expires_at  TEXT
+            )
+        ''')
+
         conn.commit()
         conn.close()
         print("Database migration complete.")
@@ -360,11 +374,13 @@ class ChangelogView(discord.ui.View):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.6.3"
+BOT_VERSION = "1.6.4"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 # Sorted Newest to Oldest for better UX
 CHANGELOG_DATA = [
+    "1.6.4 - Transfer Market: list, browse, buy, and unlist cards with /list, /market, /listed, /unlist.",
+    "1.6.4 - Fixed edition numbering — copies no longer double-increments when a card is given or dropped.",
     "1.6.3 - Duplicate cards: players can now hold multiple copies of the same card, each with its own edition number.",
     "1.6.2 - /view and /lookup now show all owned editions for duplicate cards. /lookup shows an edition picker when you own multiple copies.",
     "1.6.1 - Unique-type cards are now hidden from /view and autocomplete for players who don't own them.",
@@ -1144,6 +1160,7 @@ class CollectButton(discord.ui.Button):
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
     card_drop.start()
+    expire_market_listings.start()
     bot.loop.create_task(_start_dashboard_api())
 
 def weighted_choice(cards_with_weights):
@@ -5466,6 +5483,432 @@ async def wishlist(ctx, card_id: int):
         conn.close()
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRANSFER MARKET
+# ═══════════════════════════════════════════════════════════════════════════════
+
+MARKET_DURATIONS = {'1h': 1, '3h': 3, '6h': 6, '12h': 12, '24h': 24, '48h': 48}
+
+def _market_time_left(expires_at_str):
+    try:
+        expires = datetime.strptime(expires_at_str, '%Y-%m-%d %H:%M:%S')
+        delta = expires - datetime.utcnow()
+        if delta.total_seconds() <= 0:
+            return "Expired"
+        h, rem = divmod(int(delta.total_seconds()), 3600)
+        m = rem // 60
+        return f"{h}h {m}m" if h else f"{m}m"
+    except:
+        return "?"
+
+
+class MarketDurationSelect(discord.ui.Select):
+    def __init__(self):
+        options = [discord.SelectOption(label=label, value=label) for label in MARKET_DURATIONS]
+        super().__init__(placeholder="Select listing duration...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.seller.id:
+            return await interaction.response.send_message("This isn't your listing.", ephemeral=True)
+        hours = MARKET_DURATIONS[self.values[0]]
+        self.view.expires_at = (datetime.utcnow() + timedelta(hours=hours)).strftime('%Y-%m-%d %H:%M:%S')
+        self.view.duration_label = self.values[0]
+        for item in self.view.children:
+            if isinstance(item, MarketConfirmButton):
+                item.disabled = False
+        embed = discord.Embed(title="📋 Confirm Listing", color=discord.Color.gold())
+        embed.add_field(name="Card", value=f"**{self.view.card.name}** — Edition #{self.view.edition}", inline=True)
+        embed.add_field(name="Price", value=f"💰 {self.view.price:,} coins", inline=True)
+        embed.add_field(name="Duration", value=f"⏱ {self.values[0]}", inline=True)
+        embed.set_footer(text="Card is held in escrow until sold or expired.")
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class MarketConfirmButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Confirm Listing", style=discord.ButtonStyle.green, disabled=True)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.seller.id:
+            return await interaction.response.send_message("This isn't your listing.", ephemeral=True)
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'SELECT rowid FROM inventories WHERE user_id = ? AND card_id = ? AND edition = ? LIMIT 1',
+                (self.view.seller.id, self.view.card.card_id, self.view.edition)
+            )
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return await interaction.response.send_message("❌ You no longer own this copy.", ephemeral=True)
+            cursor.execute('SELECT 1 FROM market_listings WHERE seller_id = ? AND card_id = ? AND edition = ?',
+                           (self.view.seller.id, self.view.card.card_id, self.view.edition))
+            if cursor.fetchone():
+                conn.close()
+                return await interaction.response.send_message("❌ This edition is already listed.", ephemeral=True)
+            cursor.execute('DELETE FROM inventories WHERE rowid = ?', (row[0],))
+            cursor.execute(
+                'INSERT INTO market_listings (seller_id, card_id, edition, trade_count, price, listed_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (self.view.seller.id, self.view.card.card_id, self.view.edition,
+                 self.view.trade_count, self.view.price,
+                 datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'), self.view.expires_at)
+            )
+            conn.commit()
+        except Exception as e:
+            conn.close()
+            logger.error(f"Market list error: {e}")
+            return await interaction.response.send_message("❌ Failed to create listing.", ephemeral=True)
+        conn.close()
+        embed = discord.Embed(
+            title="✅ Card Listed!",
+            description=f"**{self.view.card.name}** (Edition #{self.view.edition}) listed for **{self.view.price:,} coins** for {self.view.duration_label}.",
+            color=discord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.view.stop()
+
+
+class MarketCancelButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Cancel", style=discord.ButtonStyle.red)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.view.seller.id:
+            return await interaction.response.send_message("This isn't your listing.", ephemeral=True)
+        await interaction.response.edit_message(content="Listing cancelled.", embed=None, view=None)
+        self.view.stop()
+
+
+class MarketListingView(discord.ui.View):
+    def __init__(self, seller, card, edition, trade_count, price):
+        super().__init__(timeout=120)
+        self.seller = seller
+        self.card = card
+        self.edition = edition
+        self.trade_count = trade_count
+        self.price = price
+        self.expires_at = None
+        self.duration_label = None
+        self.add_item(MarketDurationSelect())
+        self.add_item(MarketConfirmButton())
+        self.add_item(MarketCancelButton())
+
+
+class MarketEditionSelect(discord.ui.Select):
+    """Shown when user owns multiple copies — lets them pick which one to list."""
+    def __init__(self, copies, card, price, seller):
+        self.card = card
+        self.price = price
+        self.seller = seller
+        options = [
+            discord.SelectOption(
+                label=f"Edition #{row[0]}",
+                description="First Owner" if row[1] == 0 else "Traded In",
+                value=str(row[2])
+            )
+            for row in copies  # (edition, trade_count, rowid)
+        ]
+        super().__init__(placeholder="Select which copy to list...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.seller.id:
+            return await interaction.response.send_message("This isn't yours.", ephemeral=True)
+        selected_rowid = int(self.values[0])
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        cursor.execute('SELECT edition, trade_count FROM inventories WHERE rowid = ?', (selected_rowid,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return await interaction.response.send_message("❌ Copy not found.", ephemeral=True)
+        edition, trade_count = row
+        view = MarketListingView(self.seller, self.card, edition, trade_count, self.price)
+        embed = discord.Embed(
+            title=f"📋 List {self.card.name} — Edition #{edition}",
+            description=f"Price: **{self.price:,} coins**\nSelect a duration below.",
+            color=discord.Color.gold()
+        )
+        await interaction.response.edit_message(embed=embed, view=view)
+
+
+@bot.hybrid_command(name='list', description="List a card on the transfer market")
+@app_commands.describe(card="Card to list", price="Selling price in coins")
+@app_commands.autocomplete(card=card_search_autocomplete)
+async def list_card(ctx, card: str, price: int):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+
+    card_obj = get_card_by_id(int(card)) if card.isdigit() else get_card_by_name(card)
+    if not card_obj:
+        return await ctx.send("❌ Card not found.")
+
+    min_price = calculate_card_value(card_obj)
+    if price < min_price:
+        return await ctx.send(f"❌ Minimum listing price for **{card_obj.name}** is **{min_price:,} coins**.")
+
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT edition, trade_count, rowid FROM inventories WHERE user_id = ? AND card_id = ? ORDER BY edition',
+        (ctx.author.id, card_obj.card_id)
+    )
+    copies = cursor.fetchall()
+    conn.close()
+
+    if not copies:
+        return await ctx.send(f"❌ You don't own **{card_obj.name}**.")
+
+    if len(copies) == 1:
+        edition, trade_count, _ = copies[0]
+        view = MarketListingView(ctx.author, card_obj, edition, trade_count, price)
+        embed = discord.Embed(
+            title=f"📋 List {card_obj.name} — Edition #{edition}",
+            description=f"Price: **{price:,} coins**\nSelect a duration below.",
+            color=discord.Color.gold()
+        )
+        await ctx.send(embed=embed, view=view)
+    else:
+        view = discord.ui.View(timeout=60)
+        view.add_item(MarketEditionSelect(copies, card_obj, price, ctx.author))
+        embed = discord.Embed(
+            title=f"📋 List {card_obj.name}",
+            description=f"You own **{len(copies)} copies**. Select which one to list for **{price:,} coins**.",
+            color=discord.Color.gold()
+        )
+        await ctx.send(embed=embed, view=view)
+
+
+# ── Market Browse ──────────────────────────────────────────────────────────────
+
+MARKET_PAGE_SIZE = 5
+
+def _fetch_listings(search='', page=0):
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    query = '''
+        SELECT ml.listing_id, ml.seller_id, ml.card_id, ml.edition,
+               ml.price, ml.expires_at,
+               c.name, c.overall, c.card_rarity,
+               p.name AS seller_name
+        FROM market_listings ml
+        JOIN cards c  ON ml.card_id  = c.card_id
+        JOIN players p ON ml.seller_id = p.user_id
+        WHERE ml.expires_at > ?
+    '''
+    params = [now]
+    if search:
+        query += ' AND c.name LIKE ?'
+        params.append(f'%{search}%')
+    query += ' ORDER BY ml.listed_at DESC'
+    cursor.execute(query, params)
+    rows = cursor.fetchall()
+    conn.close()
+    total = len(rows)
+    start = page * MARKET_PAGE_SIZE
+    return rows[start:start + MARKET_PAGE_SIZE], total
+
+
+class MarketBuyButton(discord.ui.Button):
+    def __init__(self, listing_id, card_name, price, label_num):
+        super().__init__(label=f"Buy #{label_num}", style=discord.ButtonStyle.green)
+        self.listing_id = listing_id
+        self.card_name = card_name
+        self.price = price
+
+    async def callback(self, interaction: discord.Interaction):
+        conn = sqlite3.connect('cards_game.db')
+        cursor = conn.cursor()
+        now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute(
+            'SELECT seller_id, card_id, edition, trade_count, price FROM market_listings WHERE listing_id = ? AND expires_at > ?',
+            (self.listing_id, now)
+        )
+        listing = cursor.fetchone()
+        if not listing:
+            conn.close()
+            return await interaction.response.send_message("❌ This listing is no longer available.", ephemeral=True)
+        seller_id, card_id, edition, trade_count, price = listing
+        if interaction.user.id == seller_id:
+            conn.close()
+            return await interaction.response.send_message("❌ You can't buy your own listing.", ephemeral=True)
+        cursor.execute('SELECT coins FROM players WHERE user_id = ?', (interaction.user.id,))
+        buyer_coins = cursor.fetchone()[0]
+        if buyer_coins < price:
+            conn.close()
+            return await interaction.response.send_message(
+                f"❌ You need **{price:,}** coins but only have **{buyer_coins:,}**.", ephemeral=True
+            )
+        try:
+            cursor.execute('UPDATE players SET coins = coins - ? WHERE user_id = ?', (price, interaction.user.id))
+            cursor.execute('UPDATE players SET coins = coins + ? WHERE user_id = ?', (price, seller_id))
+            cursor.execute(
+                'INSERT INTO inventories (user_id, card_id, edition, trade_count) VALUES (?, ?, ?, ?)',
+                (interaction.user.id, card_id, edition, trade_count + 1)
+            )
+            cursor.execute('DELETE FROM market_listings WHERE listing_id = ?', (self.listing_id,))
+            conn.commit()
+        except Exception as e:
+            conn.close()
+            logger.error(f"Market buy error: {e}")
+            return await interaction.response.send_message("❌ Purchase failed.", ephemeral=True)
+        conn.close()
+        await interaction.response.send_message(
+            f"✅ You bought **{self.card_name}** (Edition #{edition}) for **{price:,} coins**!", ephemeral=True
+        )
+        await self.view.refresh(interaction)
+
+
+class MarketBrowseView(discord.ui.View):
+    def __init__(self, ctx, search=''):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.search = search
+        self.page = 0
+        self.message = None
+
+    def build(self):
+        self.clear_items()
+        rows, total = _fetch_listings(self.search, self.page)
+        total_pages = max(1, (total + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE)
+
+        embed = discord.Embed(title="🏪 Transfer Market", color=discord.Color.gold())
+        if self.search:
+            embed.description = f"Search: **{self.search}**"
+
+        if not rows:
+            embed.description = "No listings found."
+        else:
+            for i, row in enumerate(rows, 1):
+                listing_id, seller_id, card_id, edition, price, expires_at, card_name, overall, rarity, seller_name = row
+                time_left = _market_time_left(expires_at)
+                embed.add_field(
+                    name=f"#{i}  {card_name}  ⭐{overall}",
+                    value=f"💰 **{price:,}** | 💎 {rarity} | Edition #{edition} | 🕒 {time_left}\n👤 {seller_name}",
+                    inline=False
+                )
+                self.add_item(MarketBuyButton(listing_id, card_name, price, i))
+
+        embed.set_footer(text=f"Page {self.page + 1}/{total_pages} · {total} listing(s)")
+
+        if self.page > 0:
+            prev_btn = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+            async def prev_cb(interaction):
+                self.page -= 1
+                await self.refresh(interaction)
+            prev_btn.callback = prev_cb
+            self.add_item(prev_btn)
+
+        if (self.page + 1) * MARKET_PAGE_SIZE < total:
+            next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary)
+            async def next_cb(interaction):
+                self.page += 1
+                await self.refresh(interaction)
+            next_btn.callback = next_cb
+            self.add_item(next_btn)
+
+        return embed
+
+    async def refresh(self, interaction):
+        embed = self.build()
+        if interaction.response.is_done():
+            await self.message.edit(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+
+@bot.hybrid_command(name='market', description="Browse the transfer market")
+@app_commands.describe(search="Search by card name")
+async def market(ctx, *, search: str = ''):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    view = MarketBrowseView(ctx, search)
+    embed = view.build()
+    msg = await ctx.send(embed=embed, view=view)
+    view.message = msg
+
+
+@bot.hybrid_command(name='unlist', description="Remove your card from the transfer market")
+@app_commands.describe(listing_id="Listing ID to cancel (shown in /market)")
+async def unlist(ctx, listing_id: int):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT card_id, edition, trade_count FROM market_listings WHERE listing_id = ? AND seller_id = ?',
+        (listing_id, ctx.author.id)
+    )
+    listing = cursor.fetchone()
+    if not listing:
+        conn.close()
+        return await ctx.send("❌ Listing not found or it's not yours.")
+    card_id, edition, trade_count = listing
+    try:
+        cursor.execute('INSERT INTO inventories (user_id, card_id, edition, trade_count) VALUES (?, ?, ?, ?)',
+                       (ctx.author.id, card_id, edition, trade_count))
+        cursor.execute('DELETE FROM market_listings WHERE listing_id = ?', (listing_id,))
+        conn.commit()
+    except Exception as e:
+        conn.close()
+        logger.error(f"Unlist error: {e}")
+        return await ctx.send("❌ Failed to remove listing.")
+    conn.close()
+    card = get_card_by_id(card_id)
+    await ctx.send(f"✅ **{card.name if card else card_id}** (Edition #{edition}) returned to your inventory.")
+
+
+@bot.hybrid_command(name='listed', description="View all your active transfer market listings")
+async def listed(ctx):
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute('''
+        SELECT ml.listing_id, ml.card_id, ml.edition, ml.price, ml.expires_at, c.name, c.overall, c.card_rarity
+        FROM market_listings ml
+        JOIN cards c ON ml.card_id = c.card_id
+        WHERE ml.seller_id = ? AND ml.expires_at > ?
+        ORDER BY ml.listed_at DESC
+    ''', (ctx.author.id, now))
+    rows = cursor.fetchall()
+    conn.close()
+
+    if not rows:
+        return await ctx.send("You have no active listings on the transfer market.")
+
+    embed = discord.Embed(
+        title="📋 Your Active Listings",
+        color=discord.Color.gold()
+    )
+    for listing_id, card_id, edition, price, expires_at, name, overall, rarity in rows:
+        time_left = _market_time_left(expires_at)
+        embed.add_field(
+            name=f"{name}  ⭐{overall}",
+            value=f"💰 **{price:,}** coins | 💎 {rarity} | Edition #{edition}\n🆔 Listing `#{listing_id}` · ⏱ {time_left} left",
+            inline=False
+        )
+    embed.set_footer(text=f"{len(rows)} active listing(s) · Use /unlist <id> to cancel")
+    await ctx.send(embed=embed)
+
+
+@tasks.loop(minutes=10)
+async def expire_market_listings():
+    conn = sqlite3.connect('cards_game.db')
+    cursor = conn.cursor()
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute(
+        'SELECT listing_id, seller_id, card_id, edition, trade_count FROM market_listings WHERE expires_at <= ?', (now,)
+    )
+    expired = cursor.fetchall()
+    for listing_id, seller_id, card_id, edition, trade_count in expired:
+        cursor.execute('INSERT INTO inventories (user_id, card_id, edition, trade_count) VALUES (?, ?, ?, ?)',
+                       (seller_id, card_id, edition, trade_count))
+        cursor.execute('DELETE FROM market_listings WHERE listing_id = ?', (listing_id,))
+    if expired:
+        conn.commit()
+        logger.info(f"Expired {len(expired)} market listing(s).")
+    conn.close()
+
+
 #-----------------------------------ADMIN COMMANDS----------------------------------
 
 @bot.command(name='give_coins')
@@ -5510,10 +5953,7 @@ async def give_player(ctx, user_id: int, card_id: int):
         await ctx.send("User not found.")
         return
     
-    cursor.execute('UPDATE cards SET copies = copies + 1 WHERE card_id = ?', (card_id,))
     add_card_to_inventory(user_id, card_id)
-   
-    conn.commit()
     
     await ctx.send(f"Gave {card.name} to user ID {user_id}.")
     logger.info(f"Admin {ctx.author.name} gave card {card_id} to user ID {user_id}.")

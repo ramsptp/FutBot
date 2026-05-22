@@ -35,8 +35,9 @@
 | 5157-5182 | **Economy Helpers** |
 | 5183-5306 | **Catalog Viewer** (filters `NON_DROPPABLE_TYPES`) |
 | 5307-5441 | **Wishlist** |
-| 5442-5512 | **Admin Commands** |
-| 5513-5533 | **Slash Sync & Run** |
+| 5442-5857 | **Transfer Market** (`/list`, `/market`, `/listed`, `/unlist`, expiry task) |
+| 5858-5930 | **Admin Commands** |
+| 5931-5950 | **Slash Sync & Run** |
 
 ---
 
@@ -65,6 +66,10 @@
 | `catalog` | Prefix | 5280-5306 | Browse all cards |
 | `wishlist` | Prefix | 5389-5441 | Toggle wishlist (legacy) |
 | `wishlists` | Prefix | 5359-5385 | View wishlist |
+| `list` | Hybrid | ~5620 | List a card on transfer market |
+| `market` | Hybrid | ~5760 | Browse transfer market |
+| `listed` | Hybrid | ~5810 | View your active listings |
+| `unlist` | Hybrid | ~5830 | Cancel a market listing |
 | `trade` | Prefix | 2853-2904 | Simple 1:1 trade |
 | `exchange` | Prefix | 3338-3352 | Advanced multi-trade |
 | `battle` | Prefix | 3984-3994 | Start battle |
@@ -160,6 +165,13 @@
 | `BuilderCancelButton` | Cancel builder | 5112-5117 |
 | `CatalogView` | Catalog container | 5187-5278 |
 | `WishlistView` | Wishlist container | 5312-5356 |
+| `MarketDurationSelect` | Duration picker for /list | ~5480 |
+| `MarketConfirmButton` | Confirm listing | ~5500 |
+| `MarketCancelButton` | Cancel listing flow | ~5530 |
+| `MarketListingView` | /list flow container | ~5540 |
+| `MarketEditionSelect` | Edition picker for /list (dupes) | ~5555 |
+| `MarketBuyButton` | Buy inline button in /market | ~5690 |
+| `MarketBrowseView` | Paginated market browser | ~5720 |
 
 ---
 
@@ -239,4 +251,4 @@
 
 ---
 
-**Last Updated:** May 2026
+**Last Updated:** May 2026 · v1.6.4
