@@ -5575,11 +5575,10 @@ class TradeUpConfirmView(discord.ui.View):
                 # Two-step: pick category by weight, then random card from that category.
                 # This gives exact probabilities regardless of how many cards are in each bucket.
                 TRADEUP_RARE_CATEGORIES = [
-                    ('std_lo',  55),   # Rare Standard 80-85
-                    ('std_mid', 15),   # Rare Standard 86-89
-                    ('std_hi',  10),   # Rare Standard 90+
-                    ('hero',    10),
-                    ('icon',     6),
+                    ('std_mid', 55),   # Rare Standard 86-89 (~67%)
+                    ('std_hi',  20),   # Rare Standard 90+   (~24%)
+                    ('hero',     5),   # Hero                (~6%)
+                    ('icon',     2),   # Icon                (~2.4%)
                 ]
                 chosen = random.choices(
                     [c[0] for c in TRADEUP_RARE_CATEGORIES],
@@ -5587,7 +5586,6 @@ class TradeUpConfirmView(discord.ui.View):
                 )[0]
 
                 queries = {
-                    'std_lo':  ("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' AND overall BETWEEN 80 AND 85", []),
                     'std_mid': ("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' AND overall BETWEEN 86 AND 89", []),
                     'std_hi':  ("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' AND overall >= 90", []),
                     'hero':    ("SELECT card_id FROM cards WHERE card_type='Hero'", []),
@@ -5600,8 +5598,8 @@ class TradeUpConfirmView(discord.ui.View):
                 if pool:
                     result_card_id = random.choice(pool)
                 else:
-                    # Fallback: any Rare Standard if chosen bucket is empty
-                    cursor.execute("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' ORDER BY RANDOM() LIMIT 1")
+                    # Fallback: any Rare Standard 86+ if chosen bucket is empty
+                    cursor.execute("SELECT card_id FROM cards WHERE card_type='Standard' AND card_rarity='Rare' AND overall >= 86 ORDER BY RANDOM() LIMIT 1")
                     row = cursor.fetchone()
                     if row:
                         result_card_id = row[0]
