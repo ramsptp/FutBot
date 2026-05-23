@@ -255,4 +255,4 @@
 
 ---
 
-**Last Updated:** May 2026 · v1.6.6
+**Last Updated:** May 2026 · v1.7.0

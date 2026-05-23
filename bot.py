@@ -198,6 +198,26 @@ def migrate_db():
             if col not in ml_cols:
                 cursor.execute(f'ALTER TABLE market_listings ADD COLUMN {col} {defn}')
 
+        # --- Friends System ---
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS friendships (
+                user_id   INTEGER,
+                friend_id INTEGER,
+                added_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, friend_id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS friend_requests (
+                request_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                requester_id INTEGER,
+                recipient_id INTEGER,
+                requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                notified     INTEGER DEFAULT 0,
+                UNIQUE(requester_id, recipient_id)
+            )
+        ''')
+
         conn.commit()
         conn.close()
         print("Database migration complete.")
@@ -384,11 +404,12 @@ class ChangelogView(discord.ui.View):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.6.6"
+BOT_VERSION = "1.7.0"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 # Sorted Newest to Oldest for better UX
 CHANGELOG_DATA = [
+    "1.7.0 - Friends System: send/accept friend requests with /addfriend, /removefriend, /friends. Pending requests show on next command with accept/decline buttons.",
     "1.6.6 - Transfer market now keeps full history of all listings (sold, cancelled, expired) with status tracking.",
     "1.6.6 - Trade up reward card image now displays inside the embed instead of as a separate message.",
     "1.6.6 - Trade up rare pool now uses weighted category selection — Rare Standard cards are far more common than Hero/Icon.",
@@ -5495,6 +5516,231 @@ async def wishlist(ctx, card_id: int):
         await ctx.send("An error occurred updating your wishlist.")
     finally:
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FRIENDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _are_friends(uid_a, uid_b):
+    cursor.execute('SELECT 1 FROM friendships WHERE user_id=? AND friend_id=?', (uid_a, uid_b))
+    return cursor.fetchone() is not None
+
+
+def _add_friendship(uid_a, uid_b):
+    cursor.execute('INSERT OR IGNORE INTO friendships (user_id, friend_id) VALUES (?, ?)', (uid_a, uid_b))
+    cursor.execute('INSERT OR IGNORE INTO friendships (user_id, friend_id) VALUES (?, ?)', (uid_b, uid_a))
+    conn.commit()
+
+
+class FriendRequestView(discord.ui.View):
+    """Accept/Decline buttons for a single friend request."""
+    def __init__(self, request_id, requester_id, recipient_id, requester_name=''):
+        super().__init__(timeout=600)
+        self.request_id = request_id
+        self.requester_id = requester_id
+        self.recipient_id = recipient_id
+        self.requester_name = requester_name
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green, emoji="✅")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.recipient_id:
+            return await interaction.response.send_message("This request isn't for you.", ephemeral=True)
+        # Make sure request still exists
+        cursor.execute('SELECT 1 FROM friend_requests WHERE request_id=?', (self.request_id,))
+        if not cursor.fetchone():
+            return await interaction.response.edit_message(
+                content="⚠️ This request no longer exists.", embed=None, view=None
+            )
+        _add_friendship(self.requester_id, self.recipient_id)
+        cursor.execute('DELETE FROM friend_requests WHERE request_id=?', (self.request_id,))
+        conn.commit()
+        embed = discord.Embed(
+            title="🤝 Friend Request Accepted",
+            description=f"You are now friends with **{self.requester_name or self.requester_id}**.",
+            color=discord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red, emoji="❌")
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.recipient_id:
+            return await interaction.response.send_message("This request isn't for you.", ephemeral=True)
+        cursor.execute('DELETE FROM friend_requests WHERE request_id=?', (self.request_id,))
+        conn.commit()
+        embed = discord.Embed(
+            title="❌ Friend Request Declined",
+            description=f"Declined request from **{self.requester_name or self.requester_id}**.",
+            color=discord.Color.red()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+
+class FriendsListView(discord.ui.View):
+    """Shown alongside /friends — has a 'View Pending Requests' button if any exist."""
+    def __init__(self, user, pending_count):
+        super().__init__(timeout=120)
+        self.user = user
+        self.pending_count = pending_count
+        if pending_count > 0:
+            btn = discord.ui.Button(
+                label=f"View {pending_count} Pending Request{'s' if pending_count != 1 else ''}",
+                style=discord.ButtonStyle.primary,
+                emoji="📬"
+            )
+            btn.callback = self._show_pending
+            self.add_item(btn)
+
+    async def _show_pending(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user.id:
+            return await interaction.response.send_message("Not your friends list.", ephemeral=True)
+        cursor.execute('''
+            SELECT fr.request_id, fr.requester_id, p.name, fr.requested_at
+            FROM friend_requests fr
+            LEFT JOIN players p ON fr.requester_id = p.user_id
+            WHERE fr.recipient_id = ?
+            ORDER BY fr.requested_at ASC
+        ''', (self.user.id,))
+        requests = cursor.fetchall()
+        if not requests:
+            return await interaction.response.send_message("No pending requests.", ephemeral=True)
+        request_id, requester_id, name, requested_at = requests[0]
+        embed = discord.Embed(
+            title="📬 Pending Friend Request",
+            description=f"**{name or requester_id}** wants to be your friend.",
+            color=discord.Color.gold()
+        )
+        if len(requests) > 1:
+            embed.set_footer(text=f"{len(requests) - 1} more pending after this — accept or decline to see the next.")
+        view = FriendRequestView(request_id, requester_id, self.user.id, name or '')
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+@bot.hybrid_command(name='addfriend', description="Send a friend request to a player")
+@app_commands.describe(user="The player you want to friend")
+async def addfriend(ctx, user: discord.User):
+    if user.id == ctx.author.id:
+        return await ctx.send("❌ You can't friend yourself.")
+    if user.bot:
+        return await ctx.send("❌ You can't friend a bot.")
+
+    ensure_player_exists(ctx.author.id, ctx.author.name)
+    ensure_player_exists(user.id, user.name)
+
+    if _are_friends(ctx.author.id, user.id):
+        return await ctx.send(f"❌ You're already friends with **{user.name}**.")
+
+    cursor.execute('SELECT 1 FROM friend_requests WHERE requester_id=? AND recipient_id=?',
+                   (ctx.author.id, user.id))
+    if cursor.fetchone():
+        return await ctx.send(f"❌ You've already sent a request to **{user.name}**.")
+
+    # If they already requested you, auto-accept
+    cursor.execute('SELECT request_id FROM friend_requests WHERE requester_id=? AND recipient_id=?',
+                   (user.id, ctx.author.id))
+    incoming = cursor.fetchone()
+    if incoming:
+        _add_friendship(ctx.author.id, user.id)
+        cursor.execute('DELETE FROM friend_requests WHERE request_id=?', (incoming[0],))
+        conn.commit()
+        return await ctx.send(f"🤝 **{user.name}** had already requested you — you're now friends!")
+
+    cursor.execute('INSERT INTO friend_requests (requester_id, recipient_id) VALUES (?, ?)',
+                   (ctx.author.id, user.id))
+    conn.commit()
+    await ctx.send(f"✅ Friend request sent to **{user.name}**. They'll be notified next time they use a command.")
+
+
+@bot.hybrid_command(name='removefriend', description="Remove a player from your friends list")
+@app_commands.describe(user="The friend to remove")
+async def removefriend(ctx, user: discord.User):
+    if not _are_friends(ctx.author.id, user.id):
+        return await ctx.send(f"❌ You're not friends with **{user.name}**.")
+    cursor.execute('DELETE FROM friendships WHERE user_id=? AND friend_id=?', (ctx.author.id, user.id))
+    cursor.execute('DELETE FROM friendships WHERE user_id=? AND friend_id=?', (user.id, ctx.author.id))
+    conn.commit()
+    await ctx.send(f"✅ Removed **{user.name}** from your friends.")
+
+
+@bot.hybrid_command(name='friends', description="View your friends list")
+@app_commands.describe(user="View someone else's friends list (optional)")
+async def friends_cmd(ctx, user: discord.User = None):
+    target = user or ctx.author
+    ensure_player_exists(target.id, target.name)
+
+    cursor.execute('''
+        SELECT f.friend_id, p.name
+        FROM friendships f
+        LEFT JOIN players p ON f.friend_id = p.user_id
+        WHERE f.user_id = ?
+        ORDER BY p.name
+    ''', (target.id,))
+    friend_rows = cursor.fetchall()
+
+    pending_count = 0
+    if target.id == ctx.author.id:
+        cursor.execute('SELECT COUNT(*) FROM friend_requests WHERE recipient_id = ?', (target.id,))
+        pending_count = cursor.fetchone()[0]
+
+    embed = discord.Embed(
+        title=f"👥 {target.name}'s Friends",
+        color=discord.Color.blue()
+    )
+    if pending_count > 0:
+        embed.description = f"📬 **You have {pending_count} pending friend request{'s' if pending_count != 1 else ''}!** Click the button below to view."
+
+    if friend_rows:
+        names = '\n'.join(f"• {fname or fid}" for fid, fname in friend_rows)
+        embed.add_field(name=f"Friends ({len(friend_rows)})", value=names[:1024], inline=False)
+    else:
+        embed.add_field(name="Friends", value="No friends yet.", inline=False)
+
+    view = FriendsListView(ctx.author, pending_count) if target.id == ctx.author.id else None
+    await ctx.send(embed=embed, view=view)
+
+
+# --- Notification hook: fires after every command (prefix + slash) ---
+async def _send_pending_friend_notification(author, send_func):
+    """Sends the oldest unnotified friend request to `author`, if any."""
+    try:
+        cursor.execute('''
+            SELECT fr.request_id, fr.requester_id, p.name
+            FROM friend_requests fr
+            LEFT JOIN players p ON fr.requester_id = p.user_id
+            WHERE fr.recipient_id = ? AND fr.notified = 0
+            ORDER BY fr.requested_at ASC
+            LIMIT 1
+        ''', (author.id,))
+        row = cursor.fetchone()
+        if not row:
+            return
+        request_id, requester_id, name = row
+        cursor.execute('UPDATE friend_requests SET notified = 1 WHERE request_id = ?', (request_id,))
+        conn.commit()
+
+        cursor.execute('SELECT COUNT(*) FROM friend_requests WHERE recipient_id = ? AND request_id != ?',
+                       (author.id, request_id))
+        more = cursor.fetchone()[0]
+
+        embed = discord.Embed(
+            title="📬 New Friend Request",
+            description=f"**{name or requester_id}** has sent you a friend request!",
+            color=discord.Color.gold()
+        )
+        if more > 0:
+            embed.set_footer(text=f"You have {more} other pending request(s) — use /friends to view them.")
+        view = FriendRequestView(request_id, requester_id, author.id, name or '')
+        await send_func(content=author.mention, embed=embed, view=view)
+    except Exception as e:
+        logger.error(f"Friend notify error: {e}")
+
+
+@bot.event
+async def on_command_completion(ctx):
+    """Fires for both prefix and slash (hybrid) command completions."""
+    await _send_pending_friend_notification(ctx.author, ctx.send)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

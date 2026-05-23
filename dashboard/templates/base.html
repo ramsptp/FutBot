@@ -56,6 +56,10 @@
          href="{{ url_for('market_listings') }}">
         <i class="bi bi-shop me-1"></i>Market
       </a>
+      <a class="nav-link {% if request.endpoint in ('friends','unfriend','delete_friend_request') %}active{% endif %}"
+         href="{{ url_for('friends') }}">
+        <i class="bi bi-people-fill me-1"></i>Friends
+      </a>
 
       <div class="nav-divider"></div>
 

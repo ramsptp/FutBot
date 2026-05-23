@@ -1290,6 +1290,175 @@ def delete_market_listing(listing_id):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# FRIENDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/friends')
+def friends():
+    mode   = request.args.get('mode', 'friendships')   # friendships | requests
+    search = request.args.get('search', '').strip()
+
+    if is_online():
+        try:
+            rdb = _rdb()
+            tables = rdb.tables()
+            missing_friends  = 'friendships'     not in tables
+            missing_requests = 'friend_requests' not in tables
+
+            plyr_rows = rdb.table_rows('players') if not (missing_friends and missing_requests) else []
+            plyr_map  = {p['user_id']: p for p in plyr_rows}
+
+            friendships = []
+            requests_rows = []
+
+            if not missing_friends:
+                raw = rdb.table_rows('friendships')
+                seen = set()
+                for r in raw:
+                    a, b = r.get('user_id'), r.get('friend_id')
+                    if a is None or b is None:
+                        continue
+                    pair = tuple(sorted([a, b]))
+                    if pair in seen:
+                        continue
+                    seen.add(pair)
+                    friendships.append({
+                        'user_id':     pair[0],
+                        'user_name':   plyr_map.get(pair[0], {}).get('name', ''),
+                        'friend_id':   pair[1],
+                        'friend_name': plyr_map.get(pair[1], {}).get('name', ''),
+                        'added_at':    r.get('added_at', ''),
+                    })
+
+            if not missing_requests:
+                for r in rdb.table_rows('friend_requests'):
+                    requests_rows.append({
+                        'request_id':     r.get('request_id'),
+                        'requester_id':   r.get('requester_id'),
+                        'requester_name': plyr_map.get(r.get('requester_id'), {}).get('name', ''),
+                        'recipient_id':   r.get('recipient_id'),
+                        'recipient_name': plyr_map.get(r.get('recipient_id'), {}).get('name', ''),
+                        'requested_at':   r.get('requested_at', ''),
+                        'notified':       r.get('notified', 0),
+                    })
+
+            if search:
+                s = search.lower()
+                friendships = [r for r in friendships if
+                               s in (r['user_name'] or '').lower() or
+                               s in (r['friend_name'] or '').lower() or
+                               s in str(r['user_id']) or s in str(r['friend_id'])]
+                requests_rows = [r for r in requests_rows if
+                                 s in (r['requester_name'] or '').lower() or
+                                 s in (r['recipient_name'] or '').lower() or
+                                 s in str(r['requester_id']) or s in str(r['recipient_id'])]
+
+            friendships.sort(key=lambda r: ((r['user_name'] or '').lower(), (r['friend_name'] or '').lower()))
+            requests_rows.sort(key=lambda r: r.get('requested_at') or '', reverse=True)
+        except Exception as e:
+            flash(f'API error: {e}', 'error')
+            friendships, requests_rows = [], []
+            missing_friends = missing_requests = False
+
+        if missing_friends and missing_requests:
+            return render_template('friends.html', mode=mode, search=search,
+                                   friendships=[], requests=[], total=0, table_missing=True)
+        rows = friendships if mode == 'friendships' else requests_rows
+        return render_template('friends.html', mode=mode, search=search,
+                               friendships=friendships, requests=requests_rows,
+                               total=len(rows), table_missing=False)
+
+    # — Local mode —
+    conn = get_db()
+    missing_friends  = not table_exists(conn, 'friendships')
+    missing_requests = not table_exists(conn, 'friend_requests')
+    if missing_friends and missing_requests:
+        conn.close()
+        return render_template('friends.html', mode=mode, search=search,
+                               friendships=[], requests=[], total=0, table_missing=True)
+
+    friendships = []
+    if not missing_friends:
+        query = '''
+            SELECT f.user_id, p1.name AS user_name, f.friend_id, p2.name AS friend_name, f.added_at
+            FROM friendships f
+            LEFT JOIN players p1 ON f.user_id   = p1.user_id
+            LEFT JOIN players p2 ON f.friend_id = p2.user_id
+            WHERE f.user_id < f.friend_id
+        '''
+        params = []
+        if search:
+            query += ' AND (p1.name LIKE ? OR p2.name LIKE ? OR CAST(f.user_id AS TEXT) LIKE ? OR CAST(f.friend_id AS TEXT) LIKE ?)'
+            s = f'%{search}%'
+            params += [s, s, s, s]
+        query += ' ORDER BY p1.name, p2.name'
+        friendships = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+    requests_rows = []
+    if not missing_requests:
+        query = '''
+            SELECT fr.request_id, fr.requester_id, p1.name AS requester_name,
+                   fr.recipient_id, p2.name AS recipient_name, fr.requested_at, fr.notified
+            FROM friend_requests fr
+            LEFT JOIN players p1 ON fr.requester_id = p1.user_id
+            LEFT JOIN players p2 ON fr.recipient_id = p2.user_id
+            WHERE 1=1
+        '''
+        params = []
+        if search:
+            query += ' AND (p1.name LIKE ? OR p2.name LIKE ? OR CAST(fr.requester_id AS TEXT) LIKE ? OR CAST(fr.recipient_id AS TEXT) LIKE ?)'
+            s = f'%{search}%'
+            params += [s, s, s, s]
+        query += ' ORDER BY fr.requested_at DESC'
+        requests_rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+    conn.close()
+    rows = friendships if mode == 'friendships' else requests_rows
+    return render_template('friends.html', mode=mode, search=search,
+                           friendships=friendships, requests=requests_rows,
+                           total=len(rows), table_missing=False)
+
+
+@app.route('/friends/unfriend', methods=['POST'])
+def unfriend():
+    user_id   = int(request.form.get('user_id', 0))
+    friend_id = int(request.form.get('friend_id', 0))
+    if not user_id or not friend_id:
+        flash('Missing user IDs.', 'error')
+        return redirect(url_for('friends'))
+
+    if is_online():
+        flash('Unfriend not supported in online mode (use the bot).', 'error')
+        return redirect(url_for('friends'))
+
+    conn = get_db()
+    conn.execute('DELETE FROM friendships WHERE user_id = ? AND friend_id = ?', (user_id, friend_id))
+    conn.execute('DELETE FROM friendships WHERE user_id = ? AND friend_id = ?', (friend_id, user_id))
+    conn.commit()
+    conn.close()
+    flash('Friendship removed (both directions).', 'success')
+    return redirect(url_for('friends'))
+
+
+@app.route('/friends/request/<int:request_id>/delete', methods=['POST'])
+def delete_friend_request(request_id):
+    if is_online():
+        try:
+            _rdb().delete('friend_requests', request_id)
+            flash('Request deleted.', 'success')
+        except Exception as e:
+            flash(f'API error: {e}', 'error')
+        return redirect(url_for('friends', mode='requests'))
+
+    conn = get_db()
+    conn.execute('DELETE FROM friend_requests WHERE request_id = ?', (request_id,))
+    conn.commit()
+    conn.close()
+    flash('Request deleted.', 'success')
+    return redirect(url_for('friends', mode='requests'))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # FANTASY CARDS
 # ═══════════════════════════════════════════════════════════════════════════════
 
