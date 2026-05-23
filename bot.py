@@ -404,11 +404,13 @@ class ChangelogView(discord.ui.View):
 
 
 # Bot version and creator information
-BOT_VERSION = "1.7.0"
+BOT_VERSION = "1.7.1"
 CREATOR = "noobmaster"
 DESCRIPTION = "This bot is designed to give maximum resemblance to Match Attax card games. With this bot, you can collect football player cards and battle with your friends using your favourite players."
 # Sorted Newest to Oldest for better UX
 CHANGELOG_DATA = [
+    "1.7.1 - Leaderboards now have a Friends scope — toggle Server / Global / Friends to rank only among your friends.",
+    "1.7.1 - Friend request notifications now fire reliably after prefix commands as well as slash commands.",
     "1.7.0 - Friends System: send/accept friend requests with /addfriend, /removefriend, /friends. Pending requests show on next command with accept/decline buttons.",
     "1.6.6 - Transfer market now keeps full history of all listings (sold, cancelled, expired) with status tracking.",
     "1.6.6 - Trade up reward card image now displays inside the embed instead of as a separate message.",
@@ -2418,39 +2420,63 @@ async def build_leaderboard_embed(guild, author_id, stat_column, stat_name, scop
 
         # Optimization: Get set of member IDs for O(1) lookup
         guild_member_ids = {member.id for member in guild.members}
-        
+
         for row in all_rows:
             u_id, u_name, u_stat = row
-            
+
             if u_id in guild_member_ids:
                 if len(leaderboard_data) < 10:
                     leaderboard_data.append((rank_counter, u_name, u_stat))
-                
+
                 if u_id == author_id:
                     user_rank_info = (rank_counter, u_name, u_stat)
-                
+
                 rank_counter += 1
-                
+
             if len(leaderboard_data) == 10 and user_rank_info:
                 break
-                
+
+    elif scope == 'Friends':
+        # Build the friend set (include self so caller sees their own rank)
+        conn2 = sqlite3.connect('cards_game.db')
+        c2 = conn2.cursor()
+        c2.execute('SELECT friend_id FROM friendships WHERE user_id = ?', (author_id,))
+        friend_ids = {r[0] for r in c2.fetchall()}
+        conn2.close()
+        friend_ids.add(author_id)
+
+        for row in all_rows:
+            u_id, u_name, u_stat = row
+
+            if u_id in friend_ids:
+                if len(leaderboard_data) < 10:
+                    leaderboard_data.append((rank_counter, u_name, u_stat))
+
+                if u_id == author_id:
+                    user_rank_info = (rank_counter, u_name, u_stat)
+
+                rank_counter += 1
+
+            if len(leaderboard_data) == 10 and user_rank_info:
+                break
+
     else: # Global
         for row in all_rows:
             u_id, u_name, u_stat = row
-            
+
             if len(leaderboard_data) < 10:
                 leaderboard_data.append((rank_counter, u_name, u_stat))
-            
+
             if u_id == author_id:
                 user_rank_info = (rank_counter, u_name, u_stat)
-            
+
             rank_counter += 1
-            
+
             if len(leaderboard_data) == 10 and user_rank_info:
                 break
 
     # 3. Build Embed
-    icon = "🌍" if scope == "Global" else "🏰"
+    icon = {"Global": "🌍", "Server": "🏰", "Friends": "👥"}.get(scope, "🏆")
     embed = discord.Embed(title=f"{icon} {scope} Leaderboard - {stat_name}", color=discord.Color.gold())
     
     if not leaderboard_data:
@@ -2515,26 +2541,25 @@ class LeaderboardSelect(discord.ui.Select):
 
 
 class ScopeButton(discord.ui.Button):
+    # current_scope -> (next_scope, button_label, button_emoji)
+    _CYCLE = {
+        "Server":  ("Global",  "Show Global",  "🌍"),
+        "Global":  ("Friends", "Show Friends", "👥"),
+        "Friends": ("Server",  "Show Server",  "🏰"),
+    }
+
     def __init__(self, current_scope):
-        # If current is Server, button says "Switch to Global"
-        label = "Show Global" if current_scope == "Server" else "Show Server"
-        emoji = "🌍" if current_scope == "Server" else "🏰"
-        style = discord.ButtonStyle.secondary
-        super().__init__(label=label, emoji=emoji, style=style, row=1)
+        _, label, emoji = self._CYCLE[current_scope]
+        super().__init__(label=label, emoji=emoji, style=discord.ButtonStyle.secondary, row=1)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
-        # Toggle Scope
-        if view.scope == "Server":
-            view.scope = "Global"
-            self.label = "Show Server"
-            self.emoji = "🏰"
-        else:
-            view.scope = "Server"
-            self.label = "Show Global"
-            self.emoji = "🌍"
-            
-        # Re-build embed using the CURRENT stat (so we don't reset to Battles Won)
+        next_scope, _, _ = self._CYCLE[view.scope]
+        view.scope = next_scope
+        _, new_label, new_emoji = self._CYCLE[view.scope]
+        self.label = new_label
+        self.emoji = new_emoji
+
         embed = await build_leaderboard_embed(
             interaction.guild,
             interaction.user.id,
@@ -2542,7 +2567,7 @@ class ScopeButton(discord.ui.Button):
             view.current_stat_name,
             view.scope
         )
-        
+
         await interaction.response.edit_message(embed=embed, view=view)
 
 

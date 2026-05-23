@@ -248,6 +248,9 @@
 | `player_achievements` | Earned achievements | 118-127 |
 | `wishlists` | User wishlists | (migrated) |
 | `user_packs` | Owned packs | (migrated) |
+| `market_listings` | Transfer market (active + history) | (migrated, line ~187) |
+| `friendships` | Bidirectional friend rows | (migrated, line ~203) |
+| `friend_requests` | Pending friend requests + notified flag | (migrated, line ~211) |
 
 ---
 
@@ -264,4 +267,4 @@
 
 ---
 
-**Last Updated:** May 2026 · v1.7.0
+**Last Updated:** May 2026 · v1.7.1
