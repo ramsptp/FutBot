@@ -35,10 +35,11 @@
 | 5157-5182 | **Economy Helpers** |
 | 5183-5306 | **Catalog Viewer** (filters `NON_DROPPABLE_TYPES`) |
 | 5307-5441 | **Wishlist** |
-| 5442-5640 | **Trade Up** (`/tradeup`, `TradeUpSelect`, `TradeUpConfirmView`) |
-| 5641-6010 | **Transfer Market** (`/list`, `/market`, `/listed`, `/unlist`, expiry task) |
-| 5858-5930 | **Admin Commands** |
-| 5931-5950 | **Slash Sync & Run** |
+| 5442-5710 | **Friends** (`/addfriend`, `/removefriend`, `/friends`, `on_command_completion` notify hook) |
+| 5711-5870 | **Trade Up** (`/tradeup`, `TradeUpSelect`, `TradeUpConfirmView`) |
+| 5871-6240 | **Transfer Market** (`/list`, `/market`, `/listed`, `/unlist`, expiry task) |
+| 6241-6310 | **Admin Commands** |
+| 6311-6330 | **Slash Sync & Run** |
 
 ---
 
@@ -67,7 +68,10 @@
 | `catalog` | Prefix | 5280-5306 | Browse all cards |
 | `wishlist` | Prefix | 5389-5441 | Toggle wishlist (legacy) |
 | `wishlists` | Prefix | 5359-5385 | View wishlist |
-| `tradeup` | Hybrid | ~5630 | Trade 5 cards up to a higher rarity |
+| `addfriend` | Hybrid | ~5575 | Send a friend request |
+| `removefriend` | Hybrid | ~5610 | Remove a friend (both directions) |
+| `friends` | Hybrid | ~5625 | View friends list + pending requests button |
+| `tradeup` | Hybrid | ~5750 | Trade 5 cards up to a higher rarity |
 | `list` | Hybrid | ~5820 | List a card on transfer market |
 | `market` | Hybrid | ~5760 | Browse transfer market |
 | `listed` | Hybrid | ~5810 | View your active listings |
@@ -167,7 +171,9 @@
 | `BuilderCancelButton` | Cancel builder | 5112-5117 |
 | `CatalogView` | Catalog container | 5187-5278 |
 | `WishlistView` | Wishlist container | 5312-5356 |
-| `TradeUpSelect` | 5-card sacrifice picker | ~5490 |
+| `FriendRequestView` | Accept/Decline buttons for a single request | ~5535 |
+| `FriendsListView` | /friends container + 'View Pending' button | ~5560 |
+| `TradeUpSelect` | 5-card sacrifice picker | ~5720 |
 | `TradeUpConfirmView` | Trade up confirm/cancel | ~5520 |
 | `MarketDurationSelect` | Duration picker for /list | ~5680 |
 | `MarketConfirmButton` | Confirm listing | ~5500 |
@@ -217,6 +223,9 @@
 | `configure_battle_buttons` | Battle UI helper | 3755-3768 |
 | `add_winner_coins` | Battle reward | 5176-5178 |
 | `add_loser_coins` | Battle reward | 5180-5182 |
+| `_are_friends` | Check if two users are friends | ~5520 |
+| `_add_friendship` | Insert bidirectional friendship rows | ~5525 |
+| `_send_pending_friend_notification` | Helper used by `on_command_completion` | ~5685 |
 
 ---
 
